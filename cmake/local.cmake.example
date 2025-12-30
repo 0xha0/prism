@@ -1,0 +1,70 @@
+# ==============================================================================
+# PRISM 本地配置（示例文件）
+# ==============================================================================
+# 将此文件复制为 `local.cmake`（同目录）以自定义本地构建环境。
+# `local.cmake` 已被 gitignore，不会进入版本控制。
+#
+# 如需生成 Doxygen 文档，请确保本地安装 Doxygen 与 Graphviz。
+#
+# 使用方法: cp cmake/local.cmake.example cmake/local.cmake
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 编译器 / 工具链
+# ------------------------------------------------------------------------------
+# macOS Homebrew LLVM:
+# set(CMAKE_C_COMPILER "/opt/homebrew/opt/llvm/bin/clang")
+# set(CMAKE_CXX_COMPILER "/opt/homebrew/opt/llvm/bin/clang++")
+# list(PREPEND CMAKE_PREFIX_PATH "/opt/homebrew/opt/llvm")
+#
+# # 使用 LLVM 自带的 libc++ 和 libunwind（解决 ABI 兼容性问题）
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
+# set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -L/opt/homebrew/opt/llvm/lib/c++ -L/opt/homebrew/opt/llvm/lib/unwind -lunwind -Wl,-rpath,/opt/homebrew/opt/llvm/lib/c++ -Wl,-rpath,/opt/homebrew/opt/llvm/lib/unwind")
+
+# Linux/其他 LLVM 位置：
+# set(CMAKE_C_COMPILER "/usr/bin/clang-17")
+# set(CMAKE_CXX_COMPILER "/usr/bin/clang++-17")
+
+# 其他编译标志（示例）：
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -fno-omit-frame-pointer")
+# set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
+
+# ------------------------------------------------------------------------------
+# Halide 路径（如非系统默认）
+# ------------------------------------------------------------------------------
+# set(Halide_DIR "/path/to/halide/lib/cmake/Halide")
+
+# ------------------------------------------------------------------------------
+# 依赖路径覆盖（可选）
+# ------------------------------------------------------------------------------
+# list(APPEND CMAKE_PREFIX_PATH "/custom/prefix")
+# set(CMAKE_INCLUDE_PATH "/custom/include")
+# set(CMAKE_LIBRARY_PATH "/custom/lib")
+
+# ------------------------------------------------------------------------------
+# 构建开关
+# ------------------------------------------------------------------------------
+# set(PRISM_BUILD_TESTS ON)
+# set(PRISM_BUILD_EXAMPLES ON)
+# set(PRISM_BUILD_BENCHMARKS ON)  # 默认跟随 PRISM_BUILD_EXAMPLES
+
+# ------------------------------------------------------------------------------
+# 后端开关（AUTO/ON/OFF）
+# ------------------------------------------------------------------------------
+# set(PRISM_USE_VDSP "AUTO")    # macOS vDSP
+# set(PRISM_USE_CUFFT "AUTO")   # NVIDIA cuFFT
+# set(PRISM_USE_HIPFFT "AUTO")  # AMD hipFFT
+# set(PRISM_USE_VKFFT "AUTO")   # vkFFT (Metal/CUDA/HIP/OpenCL fallback)
+
+# ------------------------------------------------------------------------------
+# vkFFT 后端强制选择（覆盖自动检测）
+# ------------------------------------------------------------------------------
+# 有效值: 1=CUDA, 2=HIP, 3=OpenCL, 5=Metal
+# 设置后将忽略平台自动检测，强制使用指定后端
+# set(PRISM_VKFFT_BACKEND 3)    # 强制使用 OpenCL
+# set(PRISM_VKFFT_BACKEND 5)    # 强制使用 Metal
+
+# CUDA/ROCm 安装路径示例：
+# set(CUDAToolkit_ROOT "/usr/local/cuda")
+# list(APPEND CMAKE_PREFIX_PATH "/opt/rocm")

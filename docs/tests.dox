@@ -1,0 +1,42 @@
+/**
+ * @page test_page 测试导航
+ * @ingroup tests
+ * @brief 单元测试与验证用例清单
+ *
+ * 本页汇总所有测试可执行程序，给出运行方式与扩展建议，方便在阅读源码时快速跳转。
+ *
+ * @section test_files 主要测试文件
+ * - @ref test_basic_ops.cpp "tests/test_basic_ops.cpp"：基础算子与形状验证，涵盖加减乘除/卷积/克罗内克积。
+ * - @ref test_filter.cpp "tests/test_filter.cpp"：FIR/IIR/MovingAverage/Median 滤波器系数与输出稳定性。
+ * - @ref test_modem.cpp "tests/test_modem.cpp"：QAM 映射/解映射（4/16/64-QAM）及边界值。
+ * - @ref test_advanced_ops.cpp "tests/test_advanced_ops.cpp"：复合链路、不同采样率与极端参数。
+ * - @ref test_fft.cpp "tests/test_fft.cpp"：FFT Anchor、批量接口与后端选择正确性。
+ * - @ref test_simulation.cpp "tests/test_simulation.cpp"：随机源、信道模型、多普勒/相位噪声数值校验。
+ *
+ * @section test_run 运行方式
+ * - 首次构建：`cmake -S . -B build && cmake --build build`
+ * - 批量运行：`ctest --test-dir build`
+ * - 按名称运行：
+ *   - `ctest --test-dir build -R BasicOps`
+ *   - `ctest --test-dir build -R Filter`
+ *   - `ctest --test-dir build -R Modem`
+ *   - `ctest --test-dir build -R AdvancedOps`
+ *   - `ctest --test-dir build -R FFT`
+ *   - `ctest --test-dir build -R Simulation`
+ *
+ * @section test_notes 阅读与扩展指引
+ * - 每个测试文件均包含简短的套件介绍，方便直接跳转到源码查看细节。
+ * - 需要覆盖新算子时，仿照 @ref test_basic_ops.cpp 的结构添加输入构造与误差度量。
+ * - @ref test_utils.h 提供 `TestPrinter`、`TypeName`、`maxError` 等通用工具，可复用以保持输出一致。
+ * - 涉及硬件特性（如特定 GPU）的用例，请在日志中说明前置条件，便于 CI 与本地对齐。
+ *
+ * @section test_extend 扩展建议
+ * - 以现有用例为模板新增场景，注册方式参见顶层 `CMakeLists.txt` 中的 `PRISM_BUILD_TESTS` 段。
+ * - 推荐复用 `prism::simulation::RNG` 设置固定种子，保证结果可复现。
+ * - 在涉及 GPU/后端特性的用例中，记录所需宏或硬件环境，便于 CI 与本地复现。
+ */
+
+/**
+ * @defgroup tests 测试用例
+ * @brief PRISM 单元测试与验证套件
+ */

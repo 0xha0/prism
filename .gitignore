@@ -1,0 +1,33 @@
+# Build directories
+build/
+cmake-build-*/
+out/
+docs/generated
+
+# IDE
+.idea/
+.vscode/
+*.code-workspace
+.cache/
+compile_commands.json
+
+# Local configuration (user-specific, don't commit)
+cmake/local.cmake
+.env
+.env.local
+
+# Compiled objects
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+
+# macOS
+.DS_Store
+._*
+
+# Generated files
+*.generated.*

@@ -1,0 +1,159 @@
+/**
+ * @file mainpage.dox
+ * @mainpage PRISM 开发者手册
+ *
+ * @section intro_sec 简介
+ *
+ * **PRISM** (Parallel RF Instructions for Signal Manipulation) 是一个高性能跨平台信号处理库，
+ * 通过 DSL 构建计算图，并在执行阶段由 Halide JIT 或 Vendor API 进行高效计算。
+ *
+ * 核心特性：
+ * - **流式算子 DSL**：用信号节点与无状态算子串联计算链路，不阻塞、不立即计算
+ * - **Anchor 算子**：FFT/相关等强制执行节点，直接调用 Vendor API，保证性能与一致性
+ * - **可扩展后端**：vDSP / cuFFT / hipFFT / vkFFT 等多后端自动选择，可按需覆盖
+ * - **跨平台构建**：CMake 自动检测能力，支持本地覆盖、最小依赖构建与 CI 集成
+ *
+ * @section handbook_sec 如何阅读本手册
+ *
+ * 1. 初次接触：先读 @ref quickstart_sec 与 @ref workflow_sec 了解最小工作流。
+ * 2. 开发 DSL 链路：重点阅读 @ref dsl 与 @ref runtime 章节。
+ * 3. 优化或移植：参考 @ref backend 与 @ref schedule_sec，了解后端与调度接口。
+ * 4. 验证与基准：跳转 @ref test_page、@ref benchmark_page 与 @ref example_page，直接运行现有用例。
+ *
+ * @section arch_sec 系统架构
+ *
+ * PRISM 采用 DSL + Runtime 分层架构：
+ *
+ * @dot
+ * digraph prism_arch {
+ *     rankdir=TB;
+ *     bgcolor="transparent";
+ *     node [shape=record, style=filled, fillcolor="#f7f9fb", color="#708090", fontname="Helvetica"];
+ *
+ *     user     [label="{用户代码|应用逻辑 / 测试脚本}"];
+ *     dsl      [label="{DSL 层|Signal · Ops · Routines\n惰性计算图构建}"];
+ *     runtime  [label="{Runtime 层|Executor · Handler\n调度 Halide / Anchor}"];
+ *     halide   [label="{Halide Pipeline|常规算子：Add / Filter / Modem…}"];
+ *     anchor   [label="{Anchor 节点|FFT/IFFT 强制走后端}"];
+ *     fft      [label="{FFT Backend|vDSP / cuFFT / hipFFT / vkFFT}"];
+ *
+ *     user    -> dsl     [label="链路描述", color="#708090"];
+ *     dsl     -> runtime [label="生成执行计划", color="#708090"];
+ *     runtime -> halide  [label="JIT 调度（CPU/GPU）", color="#708090"];
+ *     runtime -> anchor  [style=dashed, color="#708090", label="Anchor 调用"];
+ *     anchor  -> fft     [label="Vendor FFT", color="#708090"];
+ * }
+ * @enddot
+ *
+ * @section quickstart_sec 快速开始
+ *
+ * ```cpp
+ * #include <prism/prism.h>
+ * #include <prism/dsl/Ops.h>
+ * #include <prism/runtime/Executor.h>
+ *
+ * using namespace prism::dsl;
+ * using namespace prism::runtime;
+ *
+ * int main() {
+ *     prism::initialize();
+ *
+ *     Signal x = Signal::input(1024);
+ *     Signal y = Scale(x, 0.5);
+ *     auto out = Executor::run<prism::real32_t>(y);
+ *
+ *     prism::shutdown();
+ *     return 0;
+ * }
+ * ```
+ *
+ * @section nav_sec 文档导航
+ *
+ * - 核心入口与类型：@ref core — 生命周期、版本、基本类型
+ * - DSL 节点与算子：@ref dsl — 信号节点、基础算子、滤波器、调制解调
+ * - 运行时执行与 Handler：@ref runtime — Executor、调度配置、Anchor 管线
+ * - 后端封装与 FFT：@ref backend — 统一接口与 vDSP/cuFFT/hipFFT/vkFFT 适配
+ * - 仿真信号与信道：@ref simulation — 随机源、信道与噪声模型
+ * - 示例工程导航：@ref example_page — 典型链路与扩频示例
+ * - 测试用例导航：@ref test_page — 跳转到各测试源码并附运行方式
+ * - 性能基准导航：@ref benchmark_page — 基准工具与常用参数
+ *
+ * @section module_sec 模块概览
+ *
+ * @subsection core_sub Core / 类型
+ * - `prism/prism.h`：生命周期管理、版本查询、后端名称查询
+ * - `prism/types.h`：`ScalarType` / `Shape` / `ToHalideType` 等跨模块公共类型
+ *
+ * @subsection dsl_sub DSL
+ * - `prism/dsl/signal.h`：惰性计算图节点、`OpKind` 枚举与 Signal 句柄
+ * - `prism/dsl/ops.h`：基础算子与卷积/克罗内克积工厂函数
+ * - `prism/dsl/filter.h`：FIR / IIR / MovingAverage / Median 滤波器节点
+ * - `prism/dsl/modem.h`：混频、QAM/PSK 映射与解映射节点
+ *
+ * @subsection runtime_sub Runtime
+ * - `prism/runtime/executor.h`：JIT/预编译入口，控制 CPU/GPU 模式与调度
+ * - `prism/runtime/op_handler.h`：Handler 注册、Halide 构图上下文
+ * - `prism/runtime/fft.h`：Anchor 算子封装，走后端 FFT
+ * - `prism/runtime/schedule_config.h`：CPU/GPU 调度与向量化参数
+ *
+ * @subsection backend_sub Backend
+ * - `prism/backend/backend_registry.h`：后端枚举、偏好设置、名称查询
+ * - `prism/backend/fft_backend.h`：统一 FFT 接口，封装 vDSP / cuFFT / hipFFT / vkFFT
+ * - `src/backend/*.cpp`：具体后端实现与可用性检测
+ *
+ * @subsection simulation_sub Simulation
+ * - `prism/simulation/rng.h`：可复现随机数生成器
+ * - `prism/simulation/source.h`：比特/符号/QAM 源
+ * - `prism/simulation/channel.h`：噪声、衰落、多普勒与相位噪声模型
+ *
+ * @section workflow_sec 典型工作流
+ *
+ * 1. 调用 `prism::initialize()`，根据平台选择后端。
+ * 2. 使用 DSL 构建计算图（`Signal` + `Ops/Filter/Modem`）。
+ * 3. 通过 @ref prism::runtime::Executor `run/compile` 执行，可选 @ref prism::runtime::ExecMode 模式。
+ * 4. 在仿真场景中，通过 @ref simulation 生成输入或注入信道影响。
+ * 5. 参考 @ref test_page 与 @ref benchmark_page 验证正确性与性能。
+ *
+ * @section schedule_sec 调度与性能
+ *
+ * - 默认调度：CPU 自动向量化与线程并行；数据量大于阈值时偏向 GPU。
+ * - GPU 参数：`ScheduleConfig::gpuTileSize` 控制 tile 长度，`useSharedMem` 指定是否使用共享内存。
+ * - CPU 参数：`cpuVectorWidth`/`cpuParallelism` 控制 SIMD 宽度与并行度。
+ * - Anchor 节点：`runtime::FFT` 始终调用后端，绕过 Halide 构图。
+ *
+ * @section build_sec 构建与运行
+ *
+ * ```bash
+ * cmake -S . -B build
+ * cmake --build build
+ * ctest --test-dir build        # 运行已启用的测试
+ * ```
+ *
+ * - 后端检测：默认自动检测可用 GPU/加速库，可通过编译宏或 `setBackendPreference` 覆盖。
+ * - 示例与工具：`examples/` 存放示例，详见 @ref example_page。
+ */
+
+/**
+ * @defgroup core 核心模块
+ * @brief PRISM 库核心功能
+ */
+
+/**
+ * @defgroup dsl DSL 模块
+ * @brief 信号处理计算图构建
+ */
+
+/**
+ * @defgroup runtime Runtime 模块
+ * @brief 运行时执行与 Anchor 算子
+ */
+
+/**
+ * @defgroup backend Backend 模块
+ * @brief Vendor API 与后端抽象层
+ */
+
+/**
+ * @defgroup simulation 仿真模块
+ * @brief 随机源与信道模型
+ */

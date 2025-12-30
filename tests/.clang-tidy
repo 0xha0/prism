@@ -1,0 +1,11 @@
+InheritParentConfig: true
+Checks: >
+  -readability-magic-numbers,
+  -bugprone-exception-escape,
+  -bugprone-narrowing-conversions,
+  -misc-use-anonymous-namespace,
+  -cppcoreguidelines-macro-usage,
+  -cppcoreguidelines-narrowing-conversions,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-pro-bounds-constant-array-index,
+  -readability-function-cognitive-complexity

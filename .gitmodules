@@ -1,0 +1,6 @@
+[submodule "external/vkfft"]
+	path = external/vkfft
+	url = https://github.com/DTolm/VkFFT.git
+[submodule "external/cxxopts"]
+	path = external/cxxopts
+	url = https://github.com/jarro2783/cxxopts.git

@@ -1,0 +1,30 @@
+/**
+ * @page benchmark_page 基准测试导航
+ * @ingroup benchmarks
+ * @brief 性能基准与压力测试入口
+ *
+ * 基准测试位于 `benchmark/` 目录，默认在 `PRISM_BUILD_BENCHMARKS=ON` 时构建（未显式设置时跟随 `PRISM_BUILD_EXAMPLES`）。
+ * 每个可执行程序聚焦特定算子或场景，便于评估后端与调度策略。
+ *
+ * @section bench_files 可执行清单
+ * - @ref bench_ops.cpp "benchmark/bench_ops.cpp"：基础算子、链路拼装与吞吐量。
+ * - @ref bench_fft.cpp "benchmark/bench_fft.cpp"：不同 FFT 长度与后端对比。
+ * - @ref bench_filter.cpp "benchmark/bench_filter.cpp"：FIR/IIR/MovingAverage/Median 滤波器性能。
+ * - @ref bench_modem.cpp "benchmark/bench_modem.cpp"：混频与 QAM/PSK 映射解映射性能。
+ * - @ref bench_stress.cpp "benchmark/bench_stress.cpp"：长链路与批量输入压力测试。
+ *
+ * @section bench_run 运行方式
+ * - 构建基准：`cmake -S . -B build && cmake --build build --target bench_ops bench_fft bench_filter bench_modem bench_stress`
+ * - 运行示例：`./build/bench_fft`、`./build/bench_filter` 等（可搭配 `--help`/自定义参数，如源码所示）
+ *
+ * @section bench_notes 使用提示
+ * - 运行前通过 `prism::initialize()` 选择后端，可配合环境变量/编译选项覆盖。
+ * - 建议在同一硬件上多次运行取平均，记录 GPU/CPU 频率、FFT 长度等上下文。
+ * - 若需要输出到 CSV/JSON，可在现有基准中添加格式化输出逻辑，复用公共 DSL 构图部分。
+ * - 基准输出使用 `bench_util.h` 提供的打印工具，可复用以保持格式一致。
+ */
+
+/**
+ * @defgroup benchmarks 基准与压力测试
+ * @brief PRISM 性能对比与压力基准套件
+ */

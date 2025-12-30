@@ -1,0 +1,26 @@
+/**
+ * @page example_page 示例工程导航
+ * @ingroup examples
+ * @brief 示例工程清单与运行方式
+ *
+ * 本页汇总 `examples/` 下的示例工程，覆盖基础链路与扩频链路。
+ * 每个示例包含：正确性验证、CPU/GPU 性能对比、BER 统计。
+ *
+ * @section example_files 示例文件
+ * - @example examples/apm_basic/main.cpp
+ * - @example examples/apm_dsss/main.cpp
+ *
+ * @section example_run 运行方式
+ * - 构建示例：`cmake -S . -B build && cmake --build build --target example_apm_basic example_apm_dsss`
+ * - 运行示例：`./build/example_apm_basic`、`./build/example_apm_dsss`
+ *
+ * @section example_notes 说明
+ * - CPU/GPU 性能对比使用 Halide 的 `ExecMode` 控制，GPU 不可用时会自动跳过。
+ * - DSSS 示例当前在主机端完成扩频/解扩，便于对比算法流程。
+ * - 每个示例目录均包含 README 说明与示例输出。
+ */
+
+/**
+ * @defgroup examples 示例工程
+ * @brief PRISM 示例与参考链路
+ */

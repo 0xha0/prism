@@ -9,7 +9,7 @@
  * @section bench_files 可执行清单
  * - @ref bench_ops.cpp "benchmark/bench_ops.cpp"：基础算子、链路拼装与吞吐量。
  * - @ref bench_fft.cpp "benchmark/bench_fft.cpp"：不同 FFT 长度与后端对比。
- * - @ref bench_filter.cpp "benchmark/bench_filter.cpp"：FIR/IIR/MovingAverage/Median 滤波器性能。
+ * - @ref bench_filter.cpp "benchmark/bench_filter.cpp"：FIR/MovingAverage/Median 滤波器性能。
  * - @ref bench_modem.cpp "benchmark/bench_modem.cpp"：混频与 QAM/PSK 映射解映射性能。
  * - @ref bench_stress.cpp "benchmark/bench_stress.cpp"：长链路与批量输入压力测试。
  *

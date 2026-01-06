@@ -1,15 +1,16 @@
-<p align="center">
-  <img src="https://content.gatsby.icu/image/prism_logo.svg" alt="PRISM Logo" width="200">
-</p>
+<div align="center">
+  <img src="docs/images/prism_logo.svg" alt="PRISM Logo" width="200">
 
-<h1 align="center">PRISM</h1>
-<p align="center"><b>Parallel RF Instructions for Signal Manipulation</b></p>
-<p align="center">基于 Halide 的跨平台信号处理加速库</p>
+  <h1>PRISM</h1>
 
-<p align="center">
-  <img src="https://img.shields.io/badge/C%2B%2B-17-blue.svg" alt="C++17">
-  <img src="https://img.shields.io/badge/Platform-macOS%20|%20Linux%20|%20Windows-lightgrey.svg" alt="Platform">
-</p>
+  <p><b>Parallel RF Instructions for Signal Manipulation</b></p>
+  <p>基于 Halide 信号处理算子集</p>
+
+  <p>
+    <img src="https://img.shields.io/badge/C%2B%2B-17-blue.svg" alt="C++17">
+    <img src="https://img.shields.io/badge/Platform-macOS%20|%20Linux%20|%20Windows-lightgrey.svg" alt="Platform">
+  </p>
+</div>
 
 ---
 
@@ -132,14 +133,114 @@ cmake --build build --target bench_ops bench_fft bench_filter bench_modem bench_
 ./build/bench_fft    # 其他基准同理
 ```
 
-### 生成文档
+## 示例（apm_basic / apm_dsss）
+
+依赖补充：
+
+- Halide 运行时与 autoscheduler 库
+- FFT 后端（vDSP/cuFFT/hipFFT/vkFFT 之一）
+- GPU 路径需对应驱动与 Halide GPU target（如 Metal/CUDA/HIP/OpenCL）
+
+使用流程：
+
+1. 读取 TOML 配置并生成派生参数。
+2. 编译 CPU 链路；`enable_gpu=true` 且 GPU 可用时再编译 GPU 链路。
+3. 进行正确性验证、CPU 性能测试；GPU 可用时追加 GPU 性能测试。
+4. 执行 BER 仿真；若 `output.enable=true` 则导出分步数据。
+
+配置要点：
+
+- `scheduler.tx`/`scheduler.rx` 可分别配置 `cpu`/`gpu` 的 `kind`/`name`/`extra`
+- `extra.weights_path` 默认注释，填入 autotune 输出即可启用
+
+## Autotune（高级）
+
+PRISM 提供 Halide 官方 autoscheduler 的 autotune 脚本（Adams2019 / Anderson2021）。
+**默认不会自动触发**，需要用户显式调用，避免编译时间过长。
+
+### 前置条件
+
+通用要求：
+
+- 已安装 Halide（`find_package(Halide REQUIRED)` 可通过）。
+- 先构建 autotune 生成器：
+
+  ```bash
+  cmake --build build --target example_apm_basic_autotune example_apm_dsss_autotune
+  ```
+
+- 权重文件在 `misc/`：
+  - `misc/adams2019_baseline.weights`
+  - `misc/anderson2021_baseline.weights`
+
+macOS 额外：
+
+- `gtimeout`（coreutils），否则脚本会提示安装。
+
+Anderson2021 额外：
+
+- 需要 `nvidia-smi`（缺失时 CMake 会自动生成 fake 版本，仅用于 GPU 数量检测）。
+- 需要 `libpng-config` 与 `libjpeg`（用于构建 RunGen 可执行文件）。
+
+### CMake 准备环境（推荐）
+
+执行一次即可，CMake 会在 `build/autotune/` 下创建以下目录并建立软链接：
+
+- `autosched_bin/`（autoscheduler 相关工具与 so）
+- `halide_dist/`（`include/` 与 `tools/RunGenMain.cpp` 的 shim）
+- `samples/`（输出样本）
+- `env.sh`（导出上述路径）
+- 可选：`bin/nvidia-smi` fake 脚本（仅在系统缺少 `nvidia-smi` 时生成）
 
 ```bash
-cmake --build build --target docs   # 需 Doxygen + Graphviz
+cmake --build build --target prism_autotune_setup
+```
+
+### 使用封装脚本（推荐）
+
+封装脚本会调用原始 loop 脚本，并使用 CMake 生成的目录（需要存在 `build/autotune/env.sh`）：
+
+```bash
+misc/adams2019.sh
+misc/anderson2021.sh
+```
+
+常用可覆盖变量（环境变量）：
+
+- 通用：`GENERATOR`、`PIPELINE`、`HALIDE_TARGET`、`WEIGHTS_FILE`
+- 目录：`AUTOTUNE_DIR`、`AUTOSCHED_BIN`、`HALIDE_DISTRIB_PATH`、`HALIDE_TOOLS_DIR`、`HALIDE_BUILD_DIR`、`SAMPLES_OUT`
+- 生成器参数：`GENERATOR_ARGS_SETS`（空格分组、分号分隔）
+- Anderson2021：`PARALLELISM`、`TRAIN_ONLY`、`CXX`
+
+示例（传入 base + 方向）：
+
+```bash
+misc/adams2019.sh apm_basic rx
+```
+
+### 直接调用 loop 脚本（手动）
+
+```bash
+build/autotune/tools/adams2019_autotune_loop.sh \
+  build/example_apm_basic_autotune \
+  apm_basic_tx \
+  host \
+  misc/adams2019_baseline.weights \
+  build/autotune/autosched_bin \
+  build/autotune/halide_dist \
+  build/autotune/samples/apm_basic_tx_adams2019
+```
+
+Anderson2021 若无真实 GPU，可通过自动生成的 fake `nvidia-smi` 让脚本通过检测。
+
+### 生成文档（依赖 Doxygen + Graphviz）
+
+```bash
+cmake --build build --target docs   # 需 Doxygen + Graphviz（dot）
 open docs/generated/html/index.html
 ```
 
-文档包含中文 API 手册、架构总览，并提供专门的 [测试导航](docs/tests.dox) 与 [基准导航](docs/benchmarks.dox) 页面，可直接跳转到源码。
+文档包含中文 API 手册、架构总览，并提供专门的 [测试导航](docs/tests.dox) 与 [基准导航](docs/benchmarks.dox) 页面，可直接跳转到源码；若未安装 Graphviz（`dot`），流程图将被跳过。
 
 ## 后续计划
 
@@ -154,14 +255,16 @@ open docs/generated/html/index.html
 
 - `include/`：公共头文件（DSL、Runtime、Backend、Simulation）
 - `src/`：对应实现
+- `examples/`：综合应用示例
 - `benchmark/`：性能与压力基准
 - `tests/`：单元测试
 - `docs/`：Doxygen 配置与主页（生成物在 `docs/generated`）
+- `cmake/`：构建脚本与工具链配置
 - `external/`：第三方依赖（例如 vkFFT、cxxopts）
 
 ## 后端说明
 
-- **Halide JIT**：覆盖常规算子（Add/Filter/Modem 等），CPU/GPU 自动调度。
+- **Halide JIT/AOT**：覆盖常规算子（Add/Filter/Modem 等），CPU/GPU 自动调度。
 - **FFT Anchor**：FFT/IFFT 节点强制调用后端，优先级 vDSP > cuFFT > hipFFT > vkFFT > Stub。
 - **手动控制**：`prism::initialize()` 默认自动选择；可通过 CMake 选项或编译宏覆盖。
 

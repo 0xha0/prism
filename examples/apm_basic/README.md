@@ -1,10 +1,7 @@
-# QAM/PSK 基础链路示例
+# QAM/PSK 物理链路示例
 
-本示例演示 PRISM 的 QAM/PSK 符号映射与解映射流程，包含三部分：
-
-- 正确性验证（无噪声往返）
-- CPU/GPU 性能对比（Halide 调度）
-- BER 仿真（多 SNR 统计）
+本示例在 QAM/PSK 基础链路上加入上采样、成形滤波、上/下变频与信道，
+用于 BER 统计与性能对比。参数通过 TOML 配置。
 
 ## 构建
 
@@ -19,64 +16,114 @@ cmake --build build --target example_apm_basic
 ./build/example_apm_basic
 ```
 
-常用参数：
+自定义配置路径：
 
 ```bash
-./build/example_apm_basic --order 16 --scheme qam --symbols 8192 --snr 0,5,10,15 --iters 100 --perf-iters 50
+./build/example_apm_basic examples/apm_basic/config.toml
 ```
 
-参数说明：
+> 若在 `build/` 目录内运行，请显式传入配置路径。
 
-- `--order`：调制阶数，必须为 2 的幂；QAM 要求为完全平方数。
-- `--scheme`：`auto/qam/psk`，默认 `auto`（当阶数为 2 时自动使用 BPSK）。
-- `--symbols`：每轮仿真符号数。
-- `--snr`：SNR 列表（dB），逗号分隔。
-- `--iters`：BER 统计轮数。
-- `--perf-iters`：性能统计迭代轮数。
-- `--seed`：随机种子。
-- `--no-gpu`：跳过 GPU 模式。
+## 依赖
+
+- Halide（运行时与 autoscheduler 库）
+- FFT 后端（vDSP/cuFFT/hipFFT/vkFFT 之一，按需启用）
+- GPU 路径需对应驱动与 Halide GPU target（如 Metal/CUDA/HIP/OpenCL）
+
+## 使用流程
+
+1. 读取 TOML 配置并生成派生参数。
+2. 编译 CPU 链路；若 `enable_gpu=true` 且 GPU 可用则编译 GPU 链路。
+3. 进行正确性验证、CPU 性能测试；GPU 可用时追加 GPU 性能测试。
+4. 执行 BER 仿真；如开启 `output.enable` 则导出分步数据。
+
+## 配置说明 (TOML)
+
+### `[modem]` 调制参数
+
+| 参数名 | 说明 |
+| :--- | :--- |
+| `order` | 调制阶数 (e.g., 2, 4, 16) |
+| `scheme` | 调制方式 (`psk`, `qam`) |
+| `symbols` | 仿真符号总数 |
+
+### `[sim]` 仿真控制
+
+| 参数名 | 说明 |
+| :--- | :--- |
+| `snr_db` | 信噪比 (dB) 列表 |
+| `iters` | 每个 SNR 点的仿真次数 |
+| `perf_min_time_ms` | 性能测试最小运行时长 (ms) |
+| `seed` | 随机数种子 |
+| `enable_gpu` | 是否启用 GPU 加速 |
+
+### `[sampling]` 采样与频率
+
+| 参数名 | 说明 |
+| :--- | :--- |
+| `samples_per_symbol` | 每个符号的采样点数 (过采样率) |
+| `symbol_rate_hz` | 符号率 (Hz) |
+| `sample_rate_hz` | 采样率 (Hz) |
+| `carrier_hz` | 载波频率 (Hz) |
+| `rx_lo_offset_hz` | 接收端本振频偏 (Hz) |
+| `tx_phase_rad` | 发射端初始相位 (rad) |
+| `rx_phase_rad` | 接收端初始相位 (rad) |
+
+### `[filter]` 成形滤波
+
+| 参数名 | 说明 |
+| :--- | :--- |
+| `mode` | 滤波器类型 (`rrc`: 根升余弦, `rc`: 升余弦, `none`: 无) |
+| `rolloff` | 滚降系数 (0.0 - 1.0) |
+| `span` | 滤波器长度 (符号数) |
+| `normalize` | 是否归一化 |
+
+### `[lpf]` 低通滤波
+
+| 参数名 | 说明 |
+| :--- | :--- |
+| `order` | 低通 FIR 阶数 (tap 数，建议奇数) |
+| *截止频率* | 自动根据`采样率`和`rolloff`生成 |
+
+### `[channel]` 信道模型
+
+| 参数名 | 说明 |
+| :--- | :--- |
+| `enable_awgn` | 是否启用高斯白噪声 |
+| `enable_fading` | 是否启用多径衰落 |
+| `fading_taps` | 衰落路径数 |
+| `fading_delays` | 各路径延迟 (sample) |
+| `doppler_hz` | 多普勒频移 (Hz) |
+| `cfo_hz` | 载波频偏 (Hz) |
+| `phase_noise_std` | 相位噪声标准差 |
+| `gain` | 信道增益 |
+
+### `[scheduler]` 调度配置
+
+分别配置 `tx` / `rx` 的 `cpu` / `gpu`：
+
+| 参数名 | 说明 |
+| :--- | :--- |
+| `kind` | 调度器类型 (`autoscheduler` 等) |
+| `name` | 调度器名称 (`Anderson2021`, `Adams2019` 等) |
+| `extra.weights_path` | (可选) Autotune 权重文件路径 |
+
+### `[output]` 数据导出
+
+| 参数名 | 说明 |
+| :--- | :--- |
+| `enable` | 是否启用数据导出 |
+| `dir` | 导出目录 |
+| `steps` | 需导出的步骤列表 (为空导出所有) |
+
+`perf_min_time_ms` 对应 RunGen 的 `--benchmark_min_time`。
+
+`perf_min_time_ms` 对应 RunGen 的 `--benchmark_min_time`，使用 Halide 官方 benchmark 进行计时。
 
 ## 输出说明
 
 输出包含三段：
 
-1. 正确性验证：无噪声情况下，映射后解调应完全一致。
-2. 性能对比：CPU/GPU 的 Map、Demap 与端到端延迟。
-3. BER 仿真：输出每个 SNR 的 BER 与错误计数。
-
-## 示例输出
-
-```text
-=== PRISM 示例: QAM/PSK 基础链路 ===
-
-配置:
-  scheme: QAM
-  order: 16 (bits/sym=4)
-  symbols: 4096
-  iters: 50
-  perf iters: 50
-  seed: 42
-  backend: vDSP
-  gpu: 可用
-
-正确性验证: PASS
-  symbol errors: 0
-  bit errors: 0
-
-性能对比 (CPU):
-  Map         : 0.320 ms, 12.80 MSym/s
-  Demap       : 0.410 ms, 9.98 MSym/s
-  End-to-End  : 0.780 ms, 5.25 MSym/s
-
-性能对比 (GPU):
-  Map         : 0.120 ms, 34.11 MSym/s
-  Demap       : 0.180 ms, 22.72 MSym/s
-  End-to-End  : 0.350 ms, 11.70 MSym/s
-
-BER 仿真:
-  SNR(dB)      BER        BitErrors/TotalBits
-     0.0   3.200e-01   26240/81920
-     5.0   1.210e-01   9920/81920
-    10.0   1.400e-02   1147/81920
-    15.0   4.000e-04   33/81920
-```
+1. 正确性验证（理想链路往返）。
+2. 性能对比（TX 成形 + RX 解调）。
+3. BER 仿真（按 SNR 列表统计）。

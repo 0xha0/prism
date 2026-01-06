@@ -7,7 +7,7 @@
  *
  * @section test_files 主要测试文件
  * - @ref test_basic_ops.cpp "tests/test_basic_ops.cpp"：基础算子与形状验证，涵盖加减乘除/卷积/克罗内克积。
- * - @ref test_filter.cpp "tests/test_filter.cpp"：FIR/IIR/MovingAverage/Median 滤波器系数与输出稳定性。
+ * - @ref test_filter.cpp "tests/test_filter.cpp"：FIR/MovingAverage/Median 滤波器系数与输出稳定性。
  * - @ref test_modem.cpp "tests/test_modem.cpp"：QAM 映射/解映射（4/16/64-QAM）及边界值。
  * - @ref test_advanced_ops.cpp "tests/test_advanced_ops.cpp"：复合链路、不同采样率与极端参数。
  * - @ref test_fft.cpp "tests/test_fft.cpp"：FFT Anchor、批量接口与后端选择正确性。

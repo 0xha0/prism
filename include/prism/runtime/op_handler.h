@@ -1,10 +1,10 @@
 /**
  * @file op_handler.h
  * @ingroup runtime
- * @brief Handler 接口与注册表
+ * @brief 算子处理器接口与注册表
  *
- * Runtime 通过 Handler 将 DSL 节点映射为 Halide Func，本文件定义了
- * 统一上下文、函数签名以及注册工具宏。
+ * 定义了将 DSL 算子映射为 Halide Func 的标准化接口（OpHandler）
+ * 提供了算子注册机制（REGISTER_OP 宏），允许不同模块解耦注册实现
  */
 
 #pragma once
@@ -13,7 +13,6 @@
 
 #include <functional>
 #include <map>
-#include <tuple>
 #include <unordered_map>
 
 #include "prism/dsl/signal.h"
@@ -29,37 +28,29 @@ namespace prism::runtime {
 // ============================================================================
 
 /**
- * @brief Halide 构图上下文
+ * @brief 算子构建上下文
  *
- * 同时支持编译阶段的 ImageParam 与运行阶段的 Buffer，内部维护构图缓存，
- * 避免重复构建同一节点。
+ * 在计算图构建过程中传递，用于维护状态
  *
- * @tparam T 标量类型（real32_t/real64_t/complex32_t/complex64_t）
+ * @tparam T 标量类型
  */
 template <typename T>
 struct OpContext {
-  /// 编译模式：ImageParam 输入
-  Halide::ImageParam* inputParam = nullptr;
+  /// 编译路径 (Compile-Time)：将 DSL 输入节点映射到 Halide ImageParam
+  std::map<const dsl::detail::Node*, Halide::ImageParam*> inputParams;
 
-  /// 运行模式：Buffer 输入
-  /// 注意：对于复数类型，这里存储的是 reinterpret_cast 后的实数 Buffer 指针
-  const Halide::Buffer<typename ToHalideType<T>::Type>* inputBuffer = nullptr;
+  /// JIT 路径 (Run-Time)：将 DSL 输入节点映射到实际的 Halide Buffer
+  std::map<const dsl::detail::Node*, const Halide::Buffer<typename ToHalideType<T>::Type>*>
+      inputBuffers;
 
-  /// 缓存，避免重复构建相同节点
+  /// 函数缓存：避免对同一节点重复构建 Halide::Func，保证 DAG 结构正确性
   std::unordered_map<const dsl::detail::Node*, Halide::Func> funcCache;
 
-  /// 递归构建函数（由 buildFunc 填充，用于 handler 调度子节点）
+  /// 递归构建器回调：允许算子 Handler 请求构建其子节点（输入信号）
   std::function<Halide::Func(const dsl::Signal&)> buildFunc;
 
-  // 系数缓存（同一次构图调用内复用）
-  std::map<std::vector<real32_t>, Halide::Buffer<real32_t>> firTapsCache32;
-  std::map<std::vector<real64_t>, Halide::Buffer<real64_t>> firTapsCache64;
-  std::map<std::tuple<int, std::vector<real32_t>, std::vector<real32_t>>,
-           Halide::Buffer<real32_t>>
-      iirCoeffCache32;
-  std::map<std::tuple<int, std::vector<real64_t>, std::vector<real64_t>>,
-           Halide::Buffer<real64_t>>
-      iirCoeffCache64;
+  /// GPU 标志：指示是否针对 GPU 目标进行构建（影响算子内部调度策略）
+  bool useGpu = false;
 };
 
 // ============================================================================
@@ -67,14 +58,17 @@ struct OpContext {
 // ============================================================================
 
 /**
- * @brief Handler 函数签名
+ * @brief 算子处理器函数签名
  *
- * 负责将 DSL 节点转换为 Halide::Func，并可以递归调用子节点。
- * args: 对于实数对应 {x}，对于复数对应 {c, x}
+ * 所有算子实现必须符合此签名
+ *
+ * @param node 当前处理的 DSL 节点
+ * @param ctx 构建上下文
+ * @param args Halide 变量列表（实数 {x}, 复数 {c, x}）
+ * @return 构建好的 Halide::Func
  */
 template <typename T>
-using OpHandler = Halide::Func (*)(const dsl::detail::Node* node,
-                                   OpContext<T>& ctx,
+using OpHandler = Halide::Func (*)(const dsl::detail::Node* node, OpContext<T>& ctx,
                                    const std::vector<Halide::Var>& args);
 
 // ============================================================================
@@ -82,10 +76,11 @@ using OpHandler = Halide::Func (*)(const dsl::detail::Node* node,
 // ============================================================================
 
 /**
- * @brief Handler 注册表（单例）
+ * @brief 算子注册表（单例模式）
  *
- * 提供按 @ref prism::dsl::OpKind 查找对应 Handler 的能力。
- * @tparam T 标量类型（real32_t/real64_t）
+ * 负责管理 OpKind 到 OpHandler 的映射
+ *
+ * @tparam T 标量类型
  */
 template <typename T>
 class OpRegistry {
@@ -95,14 +90,18 @@ class OpRegistry {
     return registry;
   }
 
-  /** @brief 注册算子 Handler（同一算子后注册者覆盖前者） */
-  void registerHandler(dsl::OpKind kind, OpHandler<T> handler) {
-    handlers_[kind] = handler;
-  }
+  /**
+   * @brief 注册一个算子 Handler
+   * @param kind 算子类型 ID
+   * @param handler 处理函数
+   * @note 后注册的 Handler 会覆盖先注册的（允许用户重写算子）
+   */
+  void registerHandler(dsl::OpKind kind, OpHandler<T> handler) { handlers_[kind] = handler; }
 
   /**
-   * @brief 获取指定算子的 Handler
-   * @return 若未注册返回 nullptr
+   * @brief 查找算子 Handler
+   * @param kind 算子类型 ID
+   * @return 对应的处理函数，若未找到返回 nullptr
    */
   [[nodiscard]] OpHandler<T> getHandler(dsl::OpKind kind) const {
     auto it = handlers_.find(kind);
@@ -120,30 +119,36 @@ class OpRegistry {
 // ============================================================================
 // Registration Macro
 // ============================================================================
+
 /**
- * @brief Handler 注册宏（同时注册 real32_t/real64_t 版本）
+ * @def REGISTER_OP
+ * @brief 算子注册宏
  *
- * 用法示例：`REGISTER_OP(Add, handle_add);`
+ * 自动为 real32_t, real64_t, complex32_t, complex64_t 四种类型注册算子 Handler
+ * 使用静态变量初始化机制，在 `main` 执行前完成注册
+ *
+ * @param Kind DSL OpKind 枚举名 (e.g., Add)
+ * @param Func 模板函数名 (e.g., handle_add)
  */
 // NOLINTBEGIN(bugprone-macro-parentheses)
-#define REGISTER_OP(Kind, Func)                                               \
-  namespace {                                                                 \
-  static const bool _reg_##Kind##_real32_t =                                  \
-      (::prism::runtime::OpRegistry<real32_t>::instance().registerHandler(    \
-           ::prism::dsl::OpKind::Kind, Func<real32_t>),                       \
-       true);                                                                 \
-  static const bool _reg_##Kind##_real64_t =                                  \
-      (::prism::runtime::OpRegistry<real64_t>::instance().registerHandler(    \
-           ::prism::dsl::OpKind::Kind, Func<real64_t>),                       \
-       true);                                                                 \
-  static const bool _reg_##Kind##_complex32_t =                               \
-      (::prism::runtime::OpRegistry<complex32_t>::instance().registerHandler( \
-           ::prism::dsl::OpKind::Kind, Func<complex32_t>),                    \
-       true);                                                                 \
-  static const bool _reg_##Kind##_complex64_t =                               \
-      (::prism::runtime::OpRegistry<complex64_t>::instance().registerHandler( \
-           ::prism::dsl::OpKind::Kind, Func<complex64_t>),                    \
-       true);                                                                 \
+#define REGISTER_OP(Kind, Func)                                                        \
+  namespace {                                                                          \
+  static const bool _reg_##Kind##_real32_t =                                           \
+      (::prism::runtime::OpRegistry<::prism::real32_t>::instance().registerHandler(    \
+           ::prism::dsl::OpKind::Kind, Func<::prism::real32_t>),                       \
+       true);                                                                          \
+  static const bool _reg_##Kind##_real64_t =                                           \
+      (::prism::runtime::OpRegistry<::prism::real64_t>::instance().registerHandler(    \
+           ::prism::dsl::OpKind::Kind, Func<::prism::real64_t>),                       \
+       true);                                                                          \
+  static const bool _reg_##Kind##_complex32_t =                                        \
+      (::prism::runtime::OpRegistry<::prism::complex32_t>::instance().registerHandler( \
+           ::prism::dsl::OpKind::Kind, Func<::prism::complex32_t>),                    \
+       true);                                                                          \
+  static const bool _reg_##Kind##_complex64_t =                                        \
+      (::prism::runtime::OpRegistry<::prism::complex64_t>::instance().registerHandler( \
+           ::prism::dsl::OpKind::Kind, Func<::prism::complex64_t>),                    \
+       true);                                                                          \
   }
 // NOLINTEND(bugprone-macro-parentheses)
 

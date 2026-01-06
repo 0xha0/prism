@@ -1,13 +1,15 @@
 /**
  * @file fft_backend.cpp
  * @ingroup backend
- * @brief FFT 后端选择器
+ * @brief FFT 后端选择器实现
  *
- * 根据编译时宏选择可用的 FFT 后端：
+ * 根据编译时宏定义与运行时偏好设置，动态选择并返回单例的 FFT 后端实例
+ * 优先级顺序：
  * - PRISM_HAS_VDSP:   macOS vDSP (优先)
  * - PRISM_HAS_CUFFT:  NVIDIA cuFFT
  * - PRISM_HAS_HIPFFT: AMD hipFFT
  * - PRISM_HAS_VKFFT:  vkFFT (Metal/CUDA/HIP fallback)
+ * - PRISM_HAS_STUB:   Stub (Fallback)
  */
 
 #include "prism/backend/fft_backend.h"
@@ -17,7 +19,62 @@ namespace prism::backend {
 /// @addtogroup backend
 /// @{
 
-// 各后端导出的获取函数（由对应源文件实现）
+namespace {
+// NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables)
+/// 全局偏好设置
+FftBackendType gFftPreference = FftBackendType::AUTO;
+/// 当前实际生效的后端（缓存值）
+FftBackendType gFftSelected = FftBackendType::AUTO;
+// NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables)
+
+/**
+ * @brief 根据编译宏自动选择最优后端
+ *
+ * 此函数仅基于编译期宏定义进行判断，不进行运行时硬件探测
+ */
+FftBackendType autoSelectFftBackend() {
+#ifdef PRISM_HAS_VDSP
+  return FftBackendType::VDSP;
+#elif defined(PRISM_HAS_CUFFT)
+  return FftBackendType::CUDA;
+#elif defined(PRISM_HAS_HIPFFT)
+  return FftBackendType::HIP;
+#elif defined(PRISM_HAS_VKFFT)
+  return FftBackendType::VK_FFT;
+#else
+  return FftBackendType::STUB;
+#endif
+}
+}  // namespace
+
+/**
+ * @brief 设置后端偏好并更新当前选择
+ *
+ * 若设置为 AUTO，则重新执行自动选择逻辑；否则尝试使用指定的后端
+ */
+void setFftBackendPreference(FftBackendType type) {
+  gFftPreference = type;
+  if (gFftPreference == FftBackendType::AUTO) {
+    gFftSelected = autoSelectFftBackend();
+  } else {
+    gFftSelected = gFftPreference;
+  }
+}
+
+/** @brief 返回当前已激活的后端枚举 */
+FftBackendType getFftBackendInUseType() {
+  if (gFftSelected == FftBackendType::AUTO) {
+    gFftSelected = autoSelectFftBackend();
+  }
+  return gFftSelected;
+}
+
+/**
+ * @brief 获取后端名称字符串
+ */
+const char* getFftBackendInUseName() { return getFftBackend().name(); }
+
+// 各后端实例获取函数的声明
 #ifdef PRISM_HAS_VDSP
 extern FFTBackend& getVdspBackend();
 #endif
@@ -35,9 +92,9 @@ extern FFTBackend& getVkfftBackend();
 #endif
 
 /**
- * @brief 获取当前可用的 FFT 后端
+ * @brief 获取唯一的全局 FFT 后端实例
  *
- * 优先级：vDSP > cuFFT > hipFFT > vkFFT > Stub
+ * 根据编译选项分发到具体的单例获取函数，若无任何后端可用，返回 Stub 后端
  */
 FFTBackend& getFftBackend() {
 #ifdef PRISM_HAS_VDSP
@@ -49,35 +106,38 @@ FFTBackend& getFftBackend() {
 #elif defined(PRISM_HAS_VKFFT)
   return getVkfftBackend();
 #else
-  // Stub 后端
+  // Stub 后端：用于无 FFT 实现的环境，抛出运行时错误
   static class StubFFTBackend : public FFTBackend {
    public:
-    /// @brief 不可用的占位后端，用于在无依赖环境下提供一致接口
-    bool is_available() const override { return false; }
-    const char* name() const override { return "Stub (no backend)"; }
-    void forward_c2c_32(complex32_t*, int64_t) override {
-      throw std::runtime_error("No FFT backend");
+    [[nodiscard]] bool isAvailable() const override { return false; }
+    [[nodiscard]] const char* name() const override { return "Stub (no backend)"; }
+    [[nodiscard]] bool supports(ScalarType precision, FftTransType /*type*/) const override {
+      if (!isFloatType(precision)) return false;
+      return false;
     }
-    void forward_c2c_64(complex64_t*, int64_t) override {
-      throw std::runtime_error("No FFT backend");
+    void forwardC2cImpl(complex32_t*, int64_t) override {
+      throw std::runtime_error("No FFT backend available");
     }
-    void inverse_c2c_32(complex32_t*, int64_t, bool) override {
-      throw std::runtime_error("No FFT backend");
+    void forwardC2cImpl(complex64_t*, int64_t) override {
+      throw std::runtime_error("No FFT backend available");
     }
-    void inverse_c2c_64(complex64_t*, int64_t, bool) override {
-      throw std::runtime_error("No FFT backend");
+    void inverseC2cImpl(complex32_t*, int64_t, bool) override {
+      throw std::runtime_error("No FFT backend available");
     }
-    void forward_r2c_32(const real32_t*, complex32_t*, int64_t) override {
-      throw std::runtime_error("No FFT backend");
+    void inverseC2cImpl(complex64_t*, int64_t, bool) override {
+      throw std::runtime_error("No FFT backend available");
     }
-    void forward_r2c_64(const real64_t*, complex64_t*, int64_t) override {
-      throw std::runtime_error("No FFT backend");
+    void forwardR2cImpl(const real32_t*, complex32_t*, int64_t) override {
+      throw std::runtime_error("No FFT backend available");
     }
-    void inverse_c2r_32(const complex32_t*, real32_t*, int64_t, bool) override {
-      throw std::runtime_error("No FFT backend");
+    void forwardR2cImpl(const real64_t*, complex64_t*, int64_t) override {
+      throw std::runtime_error("No FFT backend available");
     }
-    void inverse_c2r_64(const complex64_t*, real64_t*, int64_t, bool) override {
-      throw std::runtime_error("No FFT backend");
+    void inverseC2rImpl(const complex32_t*, real32_t*, int64_t, bool) override {
+      throw std::runtime_error("No FFT backend available");
+    }
+    void inverseC2rImpl(const complex64_t*, real64_t*, int64_t, bool) override {
+      throw std::runtime_error("No FFT backend available");
     }
   } stub;
   return stub;

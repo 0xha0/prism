@@ -1,15 +1,15 @@
 /**
  * @file bench_filter.cpp
  * @ingroup benchmarks
- * @brief Filter 性能测试
+ * @brief Filter 算子性能基准测试
  *
- * 比较 FIR/IIR/MovingAverage 在 CPU/GPU，JIT/AOT 上的性能
+ * 专门针对 FIR、Moving Average、Median 等滤波器算子进行性能评估
+ * 对比维度包括：
+ * - 运行模式：JIT (即时编译) vs AOT (预编译)
+ * - 硬件后端：CPU (Host) vs GPU (Compute Shader/Kernel)
+ * - 滤波器规格：不同 Taps 长度、窗口大小
  */
 
-#include <Halide.h>
-
-#include <iomanip>
-#include <iostream>
 #include <string>
 #include <vector>
 
@@ -21,6 +21,7 @@
 
 using prism::real32_t;
 using prism::real64_t;
+using prism::ScalarType;
 using namespace prism::dsl;
 using namespace prism::runtime;
 using namespace prism::benchmark;
@@ -28,91 +29,81 @@ using namespace prism::benchmark;
 /// @addtogroup benchmarks
 /// @{
 
-/** @brief 打印滤波基准表头 */
-static void printHeader() {
-  std::cout << std::setw(18) << "Filter" << std::setw(11) << "JIT CPU"
-            << std::setw(11) << "JIT GPU" << std::setw(11) << "AOT CPU"
-            << std::setw(11) << "AOT GPU"
-            << "\n";
-  BenchPrinter::printSeparator(62);
+constexpr int kLabelWidth = 26;
+
+/**
+ * @brief 执行单个滤波器的三项基准测试
+ * @tparam BuildFunc 用于构建 DSL Signal 的 Lambda 类型
+ * @param baseName 测试项目名称
+ * @param size 数据规模 (样本数)
+ * @param iterations 迭代次数
+ * @param buildFn 构建 DSL 的回调函数
+ *
+ * 该函数会依次执行以下步骤：
+ * 1. 准备输入数据
+ * 2. 构建 DSL 计算图
+ * 3. 运行 JIT-CPU 并在 BenchmarkRunner 中统计耗时
+ * 4. 运行 AOT-CPU/AOT-GPU 并在 BenchmarkRunner 中统计耗时
+ * 5. 打印汇总结果
+ */
+template <typename T, typename BuildFunc>
+static void benchFilter(const std::string& baseName, int size, int iterations, BuildFunc buildFn) {
+  using Traits = BenchTraits<T>;
+  auto buf = Traits::makeBuffer(size);
+  Traits::fillLinear(buf);
+
+  auto sig = buildFn(size, Traits::scalarType());
+  auto times = BenchmarkRunner::runSignalBench<T>(sig, buf, iterations);
+
+  BenchPrinter::printBenchResult(withPrecision<T>(baseName), times, kLabelWidth);
 }
 
-static void printResult(const std::string& name, real64_t jc, real64_t jg,
-                        real64_t ac, real64_t ag) {
-  std::cout << std::setw(18) << name << std::fixed << std::setprecision(3);
-  std::cout << std::setw(9) << jc << "ms";
-  std::cout << std::setw(9) << (jg > 0 ? jg : 0) << (jg > 0 ? "ms" : "  ");
-  std::cout << std::setw(9) << ac << "ms";
-  std::cout << std::setw(9) << (ag > 0 ? ag : 0) << (ag > 0 ? "ms" : "  ");
-  std::cout << "\n";
-}
+template <typename T>
+static void benchFiltersForType(int size, int iterations) {
+  std::vector<T> taps16(16, static_cast<T>(1.0) / static_cast<T>(16.0));
+  std::vector<T> taps64(64, static_cast<T>(1.0) / static_cast<T>(64.0));
 
-template <typename BuildFunc>
-static void benchFilter(const std::string& name, int size, BuildFunc buildFn) {
-  Halide::Buffer<real32_t> buf(size);
-  for (int i = 0; i < size; ++i) buf(i) = static_cast<real32_t>(i);
+  benchFilter<T>("FIR (16 taps)", size, iterations, [&](int s, ScalarType type) {
+    return filter::fir(Signal::input(s, type), taps16);
+  });
 
-  auto sig = buildFn(size);
+  benchFilter<T>("FIR (64 taps)", size, iterations, [&](int s, ScalarType type) {
+    return filter::fir(Signal::input(s, type), taps64);
+  });
 
-  Executor::setMode(ExecMode::CPU);
-  real64_t const jc =
-      BenchmarkRunner::run([&]() { Executor::run<real32_t>(sig, buf); });
+  benchFilter<T>("MovingAvg (16)", size, iterations, [](int s, ScalarType type) {
+    return filter::movingAverage(Signal::input(s, type), 16);
+  });
 
-  Executor::setMode(ExecMode::GPU);
-  real64_t const jg =
-      BenchmarkRunner::run([&]() { Executor::run<real32_t>(sig, buf); });
+  benchFilter<T>("MovingAvg (64)", size, iterations, [](int s, ScalarType type) {
+    return filter::movingAverage(Signal::input(s, type), 64);
+  });
 
-  auto pc = Executor::compile<real32_t>(sig, ExecMode::CPU);
-  real64_t const ac = BenchmarkRunner::run([&]() { pc.run(buf); });
+  benchFilter<T>("Median (5)", size, iterations,
+                 [](int s, ScalarType type) { return filter::median(Signal::input(s, type), 5); });
 
-  auto pg = Executor::compile<real32_t>(sig, ExecMode::GPU);
-  real64_t const ag = BenchmarkRunner::run([&]() { pg.run(buf); });
-
-  printResult(name, jc, jg, ac, ag);
+  benchFilter<T>("Median (7)", size, iterations,
+                 [](int s, ScalarType type) { return filter::median(Signal::input(s, type), 7); });
 }
 
 int main() {
-  BenchPrinter::printSuiteHeader("Filter");
+  BenchPrinter::printSuiteHeader("Filter Benchmark");
   BenchPrinter::printBackendInfo();
 
-  constexpr int benchSize = 102400;
-  printHeader();
+  int const benchSizeValue = benchSize(102400);
+  int const iterations = benchIterations(100);
+  BenchPrinter::printBenchHeader("Filter", kLabelWidth);
 
-  // FIR 滤波器测试（不同长度的系数）
-  std::vector<real32_t> taps16(16, 1.0F / 16.0F);
-  std::vector<real32_t> taps64(64, 1.0F / 64.0F);
-
-  benchFilter("FIR (16 taps)", benchSize,
-              [&](int s) { return filter::fir(Signal::input(s), taps16); });
-
-  benchFilter("FIR (64 taps)", benchSize,
-              [&](int s) { return filter::fir(Signal::input(s), taps64); });
-
-  // IIR 滤波器测试（Butterworth LPF 系数）
-  std::vector<real32_t> iirB = {0.004824F, 0.019297F, 0.028946F, 0.019297F,
-                                0.004824F};
-  std::vector<real32_t> iirA = {1.0F, -2.369513F, 2.313988F, -1.054665F,
-                                0.187379F};
-
-  benchFilter("IIR (4th order)", benchSize,
-              [&](int s) { return filter::iir(Signal::input(s), iirB, iirA); });
-
-  // 移动平均测试
-  benchFilter("MovingAvg (16)", benchSize, [](int s) {
-    return filter::movingAverage(Signal::input(s), 16);
+  forEachPrecision<real32_t, real64_t>([&](auto tag) {
+    using T = typename decltype(tag)::type;
+    benchFiltersForType<T>(benchSizeValue, iterations);
   });
-
-  benchFilter("MovingAvg (64)", benchSize, [](int s) {
-    return filter::movingAverage(Signal::input(s), 64);
-  });
-
-  // 中值滤波测试
-  benchFilter("Median (3)", benchSize,
-              [](int s) { return filter::median(Signal::input(s), 3); });
 
   BenchPrinter::printSummary();
   Executor::setMode(ExecMode::AUTO);
   return 0;
 }
+
+/// @}
 
 /// @}

@@ -2,6 +2,8 @@
  * @file convolution_handlers.cpp
  * @ingroup runtime
  * @brief 卷积相关 Handler：Convolve、Kron
+ *
+ * 实现了线性卷积和克罗内克积算子的 Halide 转换
  */
 
 #include <Halide.h>
@@ -17,11 +19,40 @@ namespace prism::runtime {
 /// @addtogroup runtime
 /// @{
 
-// ============================================================================
-// Convolve
-// ============================================================================
+namespace {
+// 边界条件处理辅助函数
+template <typename T>
+Halide::Func makeBoundedInput(const Halide::Func& inputFunc, int len, bool isComplex) {
+  using ElemT = typename ToHalideType<T>::Type;
+  if (isComplex) {
+    Halide::Region const bounds = {{0, 2}, {0, len}};
+    // 使用 constant_exterior（补零）作为默认边界条件
+    Halide::Func bounded =
+        Halide::BoundaryConditions::constant_exterior(inputFunc, Halide::cast<ElemT>(0), bounds);
+    auto const args = bounded.args();
+    if (!args.empty()) {
+      bounded.fold_storage(args.back(), len);
+    }
+    return bounded;
+  }
+  Halide::Func bounded =
+      Halide::BoundaryConditions::constant_exterior(inputFunc, Halide::cast<ElemT>(0), 0, len);
+  auto const args = bounded.args();
+  if (!args.empty()) {
+    bounded.fold_storage(args.back(), len);
+  }
+  return bounded;
+}
+}  // namespace
 
-/// 线性卷积（零填充边界）
+/**
+ * @brief Handle Convolve 算子
+ *
+ * $ y[n] = (x * h)[n] = \sum_{m} x[n-m] h[m] $
+ *
+ * 采用零填充边界条件
+ * 支持 Real/Complex 卷积，包括混合类型（Real * Complex 等）
+ */
 template <typename T>
 Halide::Func handleConvolve(const dsl::detail::Node* node, OpContext<T>& ctx,
                             const std::vector<Halide::Var>& args) {
@@ -32,56 +63,59 @@ Halide::Func handleConvolve(const dsl::detail::Node* node, OpContext<T>& ctx,
 
   Halide::RDom const r(0, kernelLen);
   Halide::Func func;
+  using ElemT = typename ToHalideType<T>::Type;
+  bool const outputComplex = isComplexType(node->outputType);
+  bool const isAComplex = isComplexType(node->inputs[0]->outputType);
+  bool const isKComplex = isComplexType(node->inputs[1]->outputType);
 
-  if constexpr (IS_COMPLEX_V<T>) {
-    // check if kernel is complex or real?
-    // Current Signal system types whole pipeline as T generally,
-    // but inputs can be mixed? dsl::Signal has `type()` but OpContext<T> fixes
-    // compilation to T. If T=Complex, we assume both are complex for safety, or
-    // implicit broadcast if one is simpler. Let's implement fully Complex *
-    // Complex convolution.
+  // (a * k)[n] = sum(a[n-m] * k[m])
+  Halide::Func const bounded = makeBoundedInput<T>(a, aLen, isAComplex);
 
+  if (outputComplex) {
     Halide::Var const& c = args[0];
     Halide::Var const& x = args[1];
+    Halide::Expr const zero = Halide::cast<ElemT>(0);
 
-    // (a * k)[n] = sum(a[n-m] * k[m])
-    // Complex mult sum.
-
-    Halide::Expr const idx = x - r;
-    Halide::Expr const inBounds = (idx >= 0 && idx < aLen);
-    Halide::Expr const boundedX = Halide::clamp(idx, 0, aLen - 1);
-
-    Halide::Expr const ar = a(0, boundedX);
-    Halide::Expr const ai = a(1, boundedX);
-    Halide::Expr const kr = kernel(0, r);
-    Halide::Expr const ki = kernel(1, r);
-
-    // mul = (ar*kr - ai*ki) + i(ar*ki + ai*kr)
-    Halide::Expr const realPart = Halide::sum(
-        Halide::select(inBounds, ar * kr - ai * ki,
-                       Halide::cast<typename ToHalideType<T>::Type>(0)));
-    Halide::Expr const imagPart = Halide::sum(
-        Halide::select(inBounds, ar * ki + ai * kr,
-                       Halide::cast<typename ToHalideType<T>::Type>(0)));
-
-    func(c, x) = Halide::select(c == 0, realPart, imagPart);
-
+    if (isAComplex && isKComplex) {
+      // C * C
+      Halide::Expr const ar = bounded(0, x - r);
+      Halide::Expr const ai = bounded(1, x - r);
+      Halide::Expr const kr = kernel(0, r);
+      Halide::Expr const ki = kernel(1, r);
+      func(c, x) = Halide::mux(c, {Halide::sum(ar * kr - ai * ki), Halide::sum(ar * ki + ai * kr)});
+    } else if (isAComplex) {
+      // C * R
+      Halide::Expr const k = kernel(r);
+      func(c, x) = Halide::sum(bounded(c, x - r) * k);
+    } else if (isKComplex) {
+      // R * C
+      Halide::Expr const aVal = bounded(x - r);
+      Halide::Expr const kr = kernel(0, r);
+      Halide::Expr const ki = kernel(1, r);
+      func(c, x) = Halide::mux(c, {Halide::sum(aVal * kr), Halide::sum(aVal * ki)});
+    } else {
+      // R * R -> C (理论上不会发生，除非 outputType 被强制指定为 Complex)
+      Halide::Expr const aVal = bounded(x - r);
+      Halide::Expr const k = kernel(r);
+      func(c, x) = Halide::mux(c, {Halide::sum(aVal * k), zero});
+    }
   } else {
     Halide::Var const& x = args[0];
-    func(x) = Halide::sum(Halide::select(
-        x - r >= 0 && x - r < aLen,
-        a(Halide::clamp(x - r, 0, aLen - 1)) * kernel(r), Halide::cast<T>(0)));
+    func(x) = Halide::sum(bounded(x - r) * kernel(r));
   }
   return func;
 }
 
 REGISTER_OP(CONVOLVE, handleConvolve);
 
-// ============================================================================
-// Kron
-// ============================================================================
-
-/// 克罗内克积：按 b 展开复制 a
+/**
+ * @brief Handle Kron (Kronecker Product) 算子
+ *
+ * $ Y = A \otimes B $
+ *
+ * 对于 1D 信号，结果长度为 $Len(A) \times Len(B)$
+ * 实现上，我们将 $A$ 的每个元素扩展为 $A[i] \times B$
+ */
 template <typename T>
 Halide::Func handleKron(const dsl::detail::Node* node, OpContext<T>& ctx,
                         const std::vector<Halide::Var>& args) {
@@ -90,32 +124,37 @@ Halide::Func handleKron(const dsl::detail::Node* node, OpContext<T>& ctx,
   int const bLen = static_cast<int>(node->inputs.at(1)->shape.length);
 
   Halide::Func func;
-  if constexpr (IS_COMPLEX_V<T>) {
-    // A (x) B
-    // For complex, elementwise mul logic applies if A element is complex.
-    // But Kron usually is block expansion.
-    // If A is matrix, B is matrix... here 1D signals.
-    // [a0, a1] (x) [b0, b1] = [a0b0, a0b1, a1b0, a1b1]
-    // Complex: a0 is pair (r,i). b0 is pair (r,i).
+  using ElemT = typename ToHalideType<T>::Type;
+  bool const outputComplex = isComplexType(node->outputType);
+  bool const isAComplex = isComplexType(node->inputs[0]->outputType);
+  bool const isBComplex = isComplexType(node->inputs[1]->outputType);
 
-    // Let's implement strictly structure:
-    // index n = x
-    // a_idx = x / bLen
-    // b_idx = x % bLen
-    // val = a(a_idx) * b(b_idx) -> Complex Mul!
-
+  if (outputComplex) {
     Halide::Var const& c = args[0];
     Halide::Var const& x = args[1];
 
     Halide::Expr const aIdx = x / bLen;
     Halide::Expr const bIdx = x % bLen;
 
-    Halide::Expr const ar = a(0, aIdx);
-    Halide::Expr const ai = a(1, aIdx);
-    Halide::Expr const br = b(0, bIdx);
-    Halide::Expr const bi = b(1, bIdx);
+    Halide::Expr const zero = Halide::cast<ElemT>(0);
+    Halide::Expr ar = zero;
+    Halide::Expr ai = zero;
+    Halide::Expr br = zero;
+    Halide::Expr bi = zero;
+    if (isAComplex) {
+      ar = a(0, aIdx);
+      ai = a(1, aIdx);
+    } else {
+      ar = a(aIdx);
+    }
+    if (isBComplex) {
+      br = b(0, bIdx);
+      bi = b(1, bIdx);
+    } else {
+      br = b(bIdx);
+    }
 
-    func(c, x) = Halide::select(c == 0, ar * br - ai * bi, ar * bi + ai * br);
+    func(c, x) = Halide::mux(c, {ar * br - ai * bi, ar * bi + ai * br});
   } else {
     Halide::Var const& x = args[0];
     func(x) = a(x / bLen) * b(x % bLen);

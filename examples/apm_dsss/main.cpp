@@ -1,458 +1,375 @@
 /**
  * @file main.cpp
- * @ingroup examples
- * @brief QAM/PSK + DSSS 链路示例
+ * @brief QAM/PSK + DSSS 直接序列扩频仿真示例
  *
- * 在 QAM/PSK 基础链路上增加直接序列扩频（DSSS），
- * 输出正确性检查、CPU/GPU 性能对比与 BER 统计。
+ * 本示例演示了如何基于 PRISM DSL 实现抗干扰能力更强的直接序列扩频 (Direct
+ * Sequence Spread Spectrum) 系统
+ *
+ * ## 系统架构
+ * 扩频通信通过将每个符号扩展为高速率的伪随机码片 (Chips)
+ * 序列，显著增加信号带宽，从而降低功率谱密度并提高抗窄带干扰能力
+ *
+ * ### 发射链路 (TX)
+ * 1. **符号映射 (ModMap)**: Bits -> Symbols (QAM/PSK 调制)
+ * 2. **扩频 (Spreading)**: Symbols -> Chips
+ *    - 每个符号被长度为 $L$ (扩频因子) 的伪随机码 (PN Code) 调制
+ *    - 实现上利用 `upsample` (插值) 和 `fir` (与 PN 序列卷积) 完成
+ * 3. **脉冲成形 (Pulse Shaping)**: Chips -> Waveform
+ *    - 对码片序列进行 RRC 滤波，限制发射带宽
+ * 4. **上变频 (Upconversion)**: 基带 -> 射频载波仿真
+ *
+ * ### 接收链路 (RX) - RAKE 接收机简化版
+ * 1. **匹配滤波 (Matched Filter)**: Waveform -> Soft Chips
+ *    - 与发射端滤波器匹配，最大化码片信噪比
+ * 2. **码片级同步与下采样**: 恢复到 Chip Rate
+ * 3. **解扩 (Despreading)**: Soft Chips * PN Code -> Soft Symbols
+ *    - 利用滑动相关 (Sliding Correlation) 或匹配滤波捕获相关峰值
+ *    - 相关峰值处即为符号的最佳判决时刻
+ * 4. **符号级下采样**: 抽取相关峰值
+ * 5. **解映射 (Demap)**: Soft Symbols -> Bits
+ *
+ * ## 关键参数
+ * - `chip_len` (扩频增益): 决定带宽扩展倍数和处理增益 ($G_p = 10 \log_{10}(L)$)
+ * - `pn_seed`: 控制伪随机序列生成的种子
  */
 
 #include <Halide.h>
 
-#include <chrono>
-#include <cmath>
-#include <cstddef>
-#include <cstdint>
-#include <cxxopts.hpp>
 #include <exception>
-#include <iomanip>
 #include <iostream>
-#include <random>
-#include <ratio>
-#include <sstream>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "example_helper.h"
 #include "prism/dsl/filter.h"
 #include "prism/dsl/modem.h"
 #include "prism/dsl/ops.h"
 #include "prism/dsl/signal.h"
 #include "prism/prism.h"
 #include "prism/runtime/executor.h"
-#include "prism/simulation/channel.h"
 #include "prism/simulation/rng.h"
+#include "prism/simulation/source.h"
 #include "prism/types.h"
 
 using prism::real32_t;
 using prism::dsl::Signal;
 using prism::runtime::ExecMode;
 using prism::runtime::Executor;
-using prism::simulation::RNG;
 using namespace prism::dsl;
-
-namespace {
-
-/** @brief 调制方式枚举 */
-enum class ModemScheme : std::uint8_t { AUTO, QAM, PSK };
-
-/** @brief 示例参数集合 */
-struct ExampleArgs {
-  int order = 2;                           ///< 调制阶数（默认 BPSK）
-  int symbols = 2048;                      ///< 每次仿真的符号数量
-  int iters = 30;                          ///< BER 统计迭代次数
-  int perfIters = 30;                      ///< 性能统计迭代次数
-  int chipLen = 8;                         ///< DSSS 扩频长度
-  uint64_t seed = 42;                      ///< 随机种子
-  bool enableGpu = true;                   ///< 是否尝试 GPU 模式
-  ModemScheme scheme = ModemScheme::AUTO;  ///< 调制方式
-  std::vector<double> snrList = {0.0, 5.0, 10.0, 15.0, 20.0};  ///< SNR 列表
-};
-
-/** @brief 解析逗号分隔的 SNR 列表 */
-bool parseSnrList(const std::string& text, std::vector<double>& out) {
-  out.clear();
-  std::stringstream ss(text);
-  std::string token;
-  while (std::getline(ss, token, ',')) {
-    if (token.empty()) continue;
-    try {
-      out.push_back(std::stod(token));
-    } catch (const std::exception&) {
-      return false;
-    }
-  }
-  return !out.empty();
-}
-
-/** @brief 判断是否为 2 的幂 */
-bool isPowerOfTwo(int value) { return value > 0 && (value & (value - 1)) == 0; }
-
-/** @brief 判断是否为完全平方数 */
-bool isPerfectSquare(int value) {
-  if (value <= 0) return false;
-  int const root = static_cast<int>(std::sqrt(value));
-  return root * root == value;
-}
-
-/** @brief 计算每符号比特数（假设 order 为 2 的幂） */
-int bitsPerSymbol(int order) {
-  int bits = 0;
-  while (order > 1) {
-    order >>= 1;
-    ++bits;
-  }
-  return bits;
-}
-
-/** @brief 生成随机符号索引 */
-std::vector<real32_t> generateSymbols(int count, int order, RNG& rng) {
-  std::uniform_int_distribution<int> dist(0, order - 1);
-  std::vector<real32_t> symbols(count);
-  for (int i = 0; i < count; ++i) {
-    symbols[i] = static_cast<real32_t>(dist(rng.engine()));
-  }
-  return symbols;
-}
-
-/** @brief 生成 DSSS 扩频码（±1） */
-std::vector<real32_t> generatePnCode(int length, RNG& rng) {
-  std::vector<real32_t> code(length);
-  for (int i = 0; i < length; ++i) {
-    code[static_cast<size_t>(i)] = (rng.bit() == 0) ? -1.0F : 1.0F;
-  }
-  return code;
-}
-
-/** @brief std::vector -> Halide::Buffer */
-Halide::Buffer<real32_t> vectorToBuffer(const std::vector<real32_t>& data) {
-  Halide::Buffer<real32_t> buf(static_cast<int>(data.size()));
-  for (int i = 0; i < buf.width(); ++i) {
-    buf(i) = data[static_cast<size_t>(i)];
-  }
-  return buf;
-}
-
-/** @brief Halide::Buffer -> std::vector */
-std::vector<real32_t> bufferToVector(const Halide::Buffer<real32_t>& buf) {
-  std::vector<real32_t> data(static_cast<size_t>(buf.width()));
-  for (int i = 0; i < buf.width(); ++i) {
-    data[static_cast<size_t>(i)] = buf(i);
-  }
-  return data;
-}
-
-/** @brief 统计 32 位整型的 bit 数 */
-int popcount32(uint32_t value) {
-  int count = 0;
-  while (value != 0U) {
-    count += static_cast<int>(value & 1U);
-    value >>= 1U;
-  }
-  return count;
-}
-
-/** @brief 符号/比特误差统计 */
-struct ErrorStats {
-  int symbolErrors = 0;
-  int64_t bitErrors = 0;
-  int64_t totalBits = 0;
-};
-
-/** @brief 比较解调结果并统计误差 */
-ErrorStats compareSymbols(const std::vector<real32_t>& expected,
-                          const Halide::Buffer<real32_t>& demapped, int bits) {
-  ErrorStats stats;
-  uint32_t const mask = (bits >= 32) ? 0xFFFFFFFFU : ((1U << bits) - 1U);
-  stats.totalBits = static_cast<int64_t>(expected.size()) * bits;
-
-  for (int i = 0; i < demapped.width(); ++i) {
-    int const expSym = static_cast<int>(expected[static_cast<size_t>(i)]);
-    int const gotSym = static_cast<int>(std::lround(demapped(i)));
-    if (expSym != gotSym) {
-      stats.symbolErrors++;
-    }
-    uint32_t const diff = static_cast<uint32_t>(expSym ^ gotSym) & mask;
-    stats.bitErrors += popcount32(diff);
-  }
-  return stats;
-}
-
-/** @brief 计时工具（返回平均毫秒） */
-template <typename Func>
-double measureMs(Func&& func, int iterations) {
-  func();
-  auto start = std::chrono::high_resolution_clock::now();
-  for (int i = 0; i < iterations; ++i) {
-    func();
-  }
-  auto end = std::chrono::high_resolution_clock::now();
-  return std::chrono::duration<double, std::milli>(end - start).count() /
-         iterations;
-}
-
-/** @brief 判断是否启用了 GPU 后端 */
-bool gpuAvailable() {
-#if defined(PRISM_GPU_BACKEND_Metal) || defined(PRISM_GPU_BACKEND_CUDA) || \
-    defined(PRISM_GPU_BACKEND_OpenCL)
-  return true;
-#else
-  return false;
-#endif
-}
-
-/** @brief 输出性能统计 */
-void printPerf(const std::string& label, double ms, int symbols) {
-  double const symPerSec = (symbols / (ms / 1000.0)) / 1e6;
-  std::cout << "  " << std::setw(12) << label << ": " << std::fixed
-            << std::setprecision(3) << ms << " ms, " << std::setprecision(2)
-            << symPerSec << " MSym/s\n";
-}
-
-}  // namespace
+using namespace prism::examples;
+using namespace prism::simulation;
 
 int main(int argc, char** argv) {
-  ExampleArgs args;
-  const std::string defaultSnr = "0,5,10,15,20";
+  DsssArgs args;
+  std::string const configPath = resolveConfigPath(argc, argv, "examples/apm_dsss/config.toml");
 
-  cxxopts::Options options("example_apm_dsss", "QAM/PSK + DSSS 链路示例");
-  options.add_options()("order", "调制阶数",
-                        cxxopts::value<int>()->default_value("2"))(
-      "scheme", "auto/qam/psk",
-      cxxopts::value<std::string>()->default_value("auto"))(
-      "symbols", "每轮符号数量", cxxopts::value<int>()->default_value("2048"))(
-      "chip-len", "扩频长度", cxxopts::value<int>()->default_value("8"))(
-      "snr", "SNR 列表 (dB, 逗号分隔)",
-      cxxopts::value<std::string>()->default_value(defaultSnr))(
-      "iters", "BER 迭代次数", cxxopts::value<int>()->default_value("30"))(
-      "perf-iters", "性能统计迭代次数",
-      cxxopts::value<int>()->default_value("30"))(
-      "seed", "随机种子", cxxopts::value<uint64_t>()->default_value("42"))(
-      "no-gpu", "跳过 GPU 模式",
-      cxxopts::value<bool>()->default_value("false")->implicit_value("true"))(
-      "h,help", "显示帮助");
-
-  cxxopts::ParseResult result;
-  try {
-    result = options.parse(argc, argv);
-  } catch (const cxxopts::exceptions::exception& e) {
-    std::cerr << "参数解析失败: " << e.what() << "\n";
-    std::cout << options.help() << "\n";
+  std::string err;
+  if (!loadDsssConfig(configPath, args, err)) {
+    std::cerr << err << "\n";
+    return 1;
+  }
+  if (!finalizeDsssArgs(args, err)) {
+    std::cerr << err << "\n";
     return 1;
   }
 
-  if (result.contains("help")) {
-    std::cout << options.help() << "\n";
-    return 0;
+  // PN Code
+  prism::simulation::RNG pnRng(args.pnSeed);
+  if (args.pnCode.empty()) {
+    args.pnCode = generatePnCode(args.chipLen, pnRng);
   }
+  std::vector<real32_t> const pnCodeRev(args.pnCode.rbegin(), args.pnCode.rend());
 
-  args.order = result["order"].as<int>();
-  args.symbols = result["symbols"].as<int>();
-  args.chipLen = result["chip-len"].as<int>();
-  args.iters = result["iters"].as<int>();
-  args.perfIters = result["perf-iters"].as<int>();
-  args.seed = result["seed"].as<uint64_t>();
-  args.enableGpu = !result["no-gpu"].as<bool>();
-
-  std::string const schemeText = result["scheme"].as<std::string>();
-  if (schemeText == "auto") {
-    args.scheme = ModemScheme::AUTO;
-  } else if (schemeText == "qam") {
-    args.scheme = ModemScheme::QAM;
-  } else if (schemeText == "psk") {
-    args.scheme = ModemScheme::PSK;
-  } else {
-    std::cerr << "未知 scheme: " << schemeText << "\n";
+  // 滤波器（将码片视为射频成形的符号）
+  StandardFilters filters;
+  if (!setupStandardFilters(args, filters, err)) {
+    std::cerr << err << "\n";
+    return 1;
+  }
+  // 检查 DSSS 要求
+  if (args.symbols * args.chipLen <= args.filter.span && args.filter.mode != "none") {
+    std::cerr << "symbols*chip_len 需大于 filter.span 以保证输出长度\n";
     return 1;
   }
 
-  std::string const snrText = result["snr"].as<std::string>();
-  if (!parseSnrList(snrText, args.snrList)) {
-    std::cerr << "SNR 列表解析失败\n";
-    return 1;
-  }
-
-  if (args.order <= 1 || !isPowerOfTwo(args.order)) {
-    std::cerr << "调制阶数必须是 2 的幂且大于 1\n";
-    return 1;
-  }
-  if (args.symbols <= 0 || args.iters <= 0 || args.perfIters <= 0 ||
-      args.chipLen <= 0) {
-    std::cerr << "symbols/iters/perf-iters/chip-len 必须为正数\n";
-    return 1;
-  }
-
-  ModemScheme scheme = args.scheme;
-  if (scheme == ModemScheme::AUTO) {
-    scheme = (args.order == 2) ? ModemScheme::PSK : ModemScheme::QAM;
-  }
-  if (scheme == ModemScheme::QAM && !isPerfectSquare(args.order)) {
-    std::cerr << "QAM 阶数必须是完全平方数\n";
-    return 1;
-  }
+  // --------------------------------------------------------------------------
+  // Initial Information / 配置信息显示
+  // --------------------------------------------------------------------------
+  std::cout << "=== PRISM 示例: QAM/PSK 物理链路 (Refactored) ===\n\n";
+  std::cout << "配置文件: " << configPath << "\n";
+  std::cout << "后端: " << prism::getFftBackendName() << "\n\n";
+  printStandardConfig(args);
 
   prism::initialize();
 
-  int const bits = bitsPerSymbol(args.order);
-  int const iqLen = args.symbols * 2;
-
-  RNG rng(args.seed);
-  auto pnCode = generatePnCode(args.chipLen, rng);
-  std::vector<real32_t> const pnCodeRev(pnCode.rbegin(), pnCode.rend());
-
-  Signal const input = Signal::input(args.symbols);
-  Signal const mapSig = (scheme == ModemScheme::PSK)
-                            ? modem::pskMap(input, args.order)
-                            : modem::qamMap(input, args.order);
-  Signal const demapSig =
-      (scheme == ModemScheme::PSK)
-          ? modem::pskDemap(Signal::input(iqLen), args.order)
-          : modem::qamDemap(Signal::input(iqLen), args.order);
-
-  Signal const spreadIn = Signal::input(iqLen);
-  Signal const spreadI =
-      filter::fir(upsample(iqI(spreadIn), args.chipLen), pnCode);
-  Signal const spreadQ =
-      filter::fir(upsample(iqQ(spreadIn), args.chipLen), pnCode);
-  Signal const spreadSig = iqPack(spreadI, spreadQ);
-
-  int const chipIqLen = iqLen * args.chipLen;
-  Signal const despreadIn = Signal::input(chipIqLen);
-  Signal const corrI = filter::fir(iqI(despreadIn), pnCodeRev);
-  Signal const corrQ = filter::fir(iqQ(despreadIn), pnCodeRev);
-  Signal const downI = downsample(corrI, args.chipLen, args.chipLen - 1);
-  Signal const downQ = downsample(corrQ, args.chipLen, args.chipLen - 1);
-  Signal const normI = scale(downI, 1.0 / static_cast<double>(args.chipLen));
-  Signal const normQ = scale(downQ, 1.0 / static_cast<double>(args.chipLen));
-  Signal const despreadSig = iqPack(normI, normQ);
-
-  auto mapCpu = Executor::compile<real32_t>(mapSig, ExecMode::CPU);
-  auto demapCpu = Executor::compile<real32_t>(demapSig, ExecMode::CPU);
-  auto spreadCpu = Executor::compile<real32_t>(spreadSig, ExecMode::CPU);
-  auto despreadCpu = Executor::compile<real32_t>(despreadSig, ExecMode::CPU);
-
-  std::cout << "=== PRISM 示例: QAM/PSK + DSSS ===\n\n";
-  std::cout << "配置:\n";
-  std::cout << "  scheme: " << ((scheme == ModemScheme::PSK) ? "PSK" : "QAM")
-            << "\n";
-  std::cout << "  order: " << args.order << " (bits/sym=" << bits << ")\n";
-  std::cout << "  symbols: " << args.symbols << "\n";
-  std::cout << "  chip len: " << args.chipLen << "\n";
-  std::cout << "  iters: " << args.iters << "\n";
-  std::cout << "  perf iters: " << args.perfIters << "\n";
-  std::cout << "  seed: " << args.seed << "\n";
-  std::cout << "  backend: " << prism::getBackendName() << "\n";
-  std::cout << "  gpu: " << (gpuAvailable() ? "可用" : "未启用") << "\n\n";
-
   // --------------------------------------------------------------------------
-  // 正确性验证（无噪声往返）
+  // Pipeline
   // --------------------------------------------------------------------------
-  auto symbols = generateSymbols(args.symbols, args.order, rng);
-  auto inputBuf = vectorToBuffer(symbols);
+  auto const& scheme = args.scheme;
+  auto defineTx = [&](const Signal& txInput) {
+    // 1. 符号映射 (Symbol Mapping)
+    // 将输入比特流映射为复数符号 (Symbol Rate)
+    Signal const mapSig = (scheme == ModemScheme::PSK) ? modem::pskMap(txInput, args.order)
+                                                       : modem::qamMap(txInput, args.order);
 
-  auto mapped = mapCpu.run(inputBuf);
-  auto spread = spreadCpu.run(mapped);
-  auto despread = despreadCpu.run(spread);
-  auto demapped = demapCpu.run(despread);
+    // 2. 扩频 (Spreading)
+    // 将每个符号扩展为 chip_len 个码片 (Chip Rate)
+    // 实现方式：先上采样 (插0) 到 chip_len 倍，然后与 PN 序列卷积 (相当于
+    // Kronecker 积) PN 序列作为 FIR 滤波器系数，长度等于扩频因子
+    Signal const spreadI = filter::fir(upsample(real(mapSig), args.chipLen), args.pnCode);
+    Signal const spreadQ = filter::fir(upsample(imag(mapSig), args.chipLen), args.pnCode);
 
-  ErrorStats const roundtrip = compareSymbols(symbols, demapped, bits);
-  bool const pass = (roundtrip.symbolErrors == 0);
+    // 3. 脉冲成形 (Pulse Shaping)
+    // 将码片序列上采样并进行 RRC 滤波 (Sample Rate)
+    // SPS 这里指 Samples Per Chip，即每个码片的采样点数
+    Signal const upI = upsample(spreadI, args.samplesPerSymbol);
+    Signal const upQ = upsample(spreadQ, args.samplesPerSymbol);
+    Signal const shapeI = filter::fir(upI, filters.shapingTaps);
+    Signal const shapeQ = filter::fir(upQ, filters.shapingTaps);
 
-  std::cout << "正确性验证: " << (pass ? "PASS" : "FAIL") << "\n";
-  std::cout << "  symbol errors: " << roundtrip.symbolErrors << "\n";
-  std::cout << "  bit errors: " << roundtrip.bitErrors << "\n\n";
+    // 4. I/Q 打包
+    // 合成最终的复数基带信号
+    return complexPack(shapeI, shapeQ);
+  };
 
-  // --------------------------------------------------------------------------
-  // 性能对比
-  // --------------------------------------------------------------------------
-  std::cout << "性能对比 (CPU):\n";
-  double const mapCpuMs =
-      measureMs([&]() { mapCpu.run(inputBuf); }, args.perfIters);
-  double const demapCpuMs =
-      measureMs([&]() { demapCpu.run(despread); }, args.perfIters);
-  double const spreadMs =
-      measureMs([&]() { spreadCpu.run(mapped); }, args.perfIters);
-  double const despreadMs =
-      measureMs([&]() { despreadCpu.run(spread); }, args.perfIters);
-  double const e2eCpuMs = measureMs(
-      [&]() {
-        auto iq = mapCpu.run(inputBuf);
-        auto spreadTmp = spreadCpu.run(iq);
-        auto despreadTmp = despreadCpu.run(spreadTmp);
-        demapCpu.run(despreadTmp);
-      },
-      args.perfIters);
+  auto defineRx = [&](const Signal& rxInput) {
+    // 1. 接收前端滤波与匹配
+    // LPF: 滤除带外噪声 (Anti-aliasing)
+    Signal const rxLpfI = filter::fir(real(rxInput), filters.lpfTaps);
+    Signal const rxLpfQ = filter::fir(imag(rxInput), filters.lpfTaps);
 
-  printPerf("Map", mapCpuMs, args.symbols);
-  printPerf("Demap", demapCpuMs, args.symbols);
-  printPerf("Spread", spreadMs, args.symbols);
-  printPerf("Despread", despreadMs, args.symbols);
-  printPerf("End-to-End", e2eCpuMs, args.symbols);
+    // MF: 匹配发送端的脉冲成形 (RRC)，最大化码片信噪比
+    Signal const mfI = filter::fir(rxLpfI, filters.shapingTaps);
+    Signal const mfQ = filter::fir(rxLpfQ, filters.shapingTaps);
 
-  if (args.enableGpu && gpuAvailable()) {
+    // 2. 下采样到码片速率 (Sample Rate -> Chip Rate)
+    // 选择最佳采样点 (downModelDelay) 进行抽取
+    Signal const chipI = downsample(mfI, args.samplesPerSymbol, filters.downModelDelay);
+    Signal const chipQ = downsample(mfQ, args.samplesPerSymbol, filters.downModelDelay);
+    Signal const chipSig = complexPack(chipI, chipQ);
+
+    // 3. 解扩 (Despreading / Correlation)
+    // 将接收到的码片序列与本地 PN 码 (翻转后) 进行卷积，实现滑动相关运算
+    // 相关峰值将出现在符号边界处，幅度增强 L 倍
+    Signal const corrI = filter::fir(real(chipSig), pnCodeRev);
+    Signal const corrQ = filter::fir(imag(chipSig), pnCodeRev);
+
+    // 4. 符号级下采样 (Chip Rate -> Symbol Rate)
+    // 在相关峰值处抽取符号，延迟通常为 ChipLen - 1 (卷积带来的延迟) + 系统延迟
+    Signal const symI = downsample(corrI, args.chipLen, args.chipLen - 1);
+    Signal const symQ = downsample(corrQ, args.chipLen, args.chipLen - 1);
+
+    // 5. 幅度归一化 (Normalization)
+    // 扩频增益导致相关峰值幅度为 ChipLen，需归一化以匹配星座图
+    Signal const normI = scale(symI, 1.0F / static_cast<real32_t>(args.chipLen));
+    Signal const normQ = scale(symQ, 1.0F / static_cast<real32_t>(args.chipLen));
+
+    // 6. 解映射 (Demapping)
+    // 将软符号判决为比特
+    return (scheme == ModemScheme::PSK) ? modem::pskDemap(normI, normQ, args.order)
+                                        : modem::qamDemap(normI, normQ, args.order);
+  };
+
+  auto txInLen = args.symbols;
+  auto rxInLen = args.symbols * args.chipLen * args.samplesPerSymbol;
+
+  // CPU
+  auto txChainCpu = Executor::compile<real32_t>(defineTx(Signal::input(txInLen)), ExecMode::CPU,
+                                                args.cpuScheduleTx);
+  auto rxChainCpu = Executor::compile<real32_t>(
+      defineRx(Signal::input(rxInLen, prism::ScalarType::C32)), ExecMode::CPU, args.cpuScheduleRx);
+
+  // GPU
+  using ExecHandle = decltype(txChainCpu);
+  std::optional<ExecHandle> txChainGpu;
+  std::optional<ExecHandle> rxChainGpu;
+
+  if (gpuAvailable()) {
     try {
-      auto mapGpu = Executor::compile<real32_t>(mapSig, ExecMode::GPU);
-      auto demapGpu = Executor::compile<real32_t>(demapSig, ExecMode::GPU);
-      auto spreadGpu = Executor::compile<real32_t>(spreadSig, ExecMode::GPU);
-      auto despreadGpu =
-          Executor::compile<real32_t>(despreadSig, ExecMode::GPU);
-
-      std::cout << "\n性能对比 (GPU):\n";
-      double const mapGpuMs =
-          measureMs([&]() { mapGpu.run(inputBuf); }, args.perfIters);
-      double const demapGpuMs =
-          measureMs([&]() { demapGpu.run(despread); }, args.perfIters);
-      double const e2eGpuMs = measureMs(
-          [&]() {
-            auto iq = mapGpu.run(inputBuf);
-            auto spreadTmp = spreadGpu.run(iq);
-            auto despreadTmp = despreadGpu.run(spreadTmp);
-            demapGpu.run(despreadTmp);
-          },
-          args.perfIters);
-
-      printPerf("Map", mapGpuMs, args.symbols);
-      printPerf("Demap", demapGpuMs, args.symbols);
-      double const spreadGpuMs =
-          measureMs([&]() { spreadGpu.run(mapped); }, args.perfIters);
-      double const despreadGpuMs =
-          measureMs([&]() { despreadGpu.run(spread); }, args.perfIters);
-
-      printPerf("Spread", spreadGpuMs, args.symbols);
-      printPerf("Despread", despreadGpuMs, args.symbols);
-      printPerf("End-to-End", e2eGpuMs, args.symbols);
+      txChainGpu = Executor::compile<real32_t>(defineTx(Signal::input(txInLen)), ExecMode::GPU,
+                                               args.gpuScheduleTx);
+      rxChainGpu =
+          Executor::compile<real32_t>(defineRx(Signal::input(rxInLen, prism::ScalarType::C32)),
+                                      ExecMode::GPU, args.gpuScheduleRx);
     } catch (const std::exception& e) {
-      std::cout << "\nGPU 模式不可用: " << e.what() << "\n";
+      std::cout << "GPU compilation failed: " << e.what() << "\n";
     }
+  }
+
+  // --------------------------------------------------------------------------
+  // 1. 参数检查
+  // --------------------------------------------------------------------------
+  bool const pass = runStandardVerification(
+      args, [&](const Halide::Buffer<real32_t>& txIn) { return txChainCpu.run(txIn); },
+      [&](const Halide::Buffer<real32_t>& rxIn) { return rxChainCpu.run(rxIn); });
+  if (!pass) {
+    // 验证失败，但通常我们会继续进行性能测试和误码率测试
+  }
+
+  // --------------------------------------------------------------------------
+  // 2. 性能测试
+  // --------------------------------------------------------------------------
+  if (args.perfMinTimeMs > 0.0) {
+    prism::simulation::RNG rng(args.seed);
+    auto symbols = vectorToBuffer(randomSymbols<real32_t>(args.symbols, args.order, &rng));
+
+    auto defineTxMap = [&](const Signal& in) {
+      return (scheme == ModemScheme::PSK) ? modem::pskMap(in, args.order)
+                                          : modem::qamMap(in, args.order);
+    };
+    auto defineTxSpread = [&](const Signal& in) {
+      return complexPack(filter::fir(upsample(real(in), args.chipLen), args.pnCode),
+                         filter::fir(upsample(imag(in), args.chipLen), args.pnCode));
+    };
+    auto defineTxUp = [&](const Signal& in) {
+      return complexPack(upsample(real(in), args.samplesPerSymbol),
+                         upsample(imag(in), args.samplesPerSymbol));
+    };
+    auto defineTxShape = [&](const Signal& in) {
+      return complexPack(filter::fir(real(in), filters.shapingTaps),
+                         filter::fir(imag(in), filters.shapingTaps));
+    };
+    auto defineRxLpf = [&](const Signal& in) {
+      return complexPack(filter::fir(real(in), filters.lpfTaps),
+                         filter::fir(imag(in), filters.lpfTaps));
+    };
+    auto defineRxMatch = [&](const Signal& in) {
+      return complexPack(filter::fir(real(in), filters.shapingTaps),
+                         filter::fir(imag(in), filters.shapingTaps));
+    };
+    auto defineRxDown = [&](const Signal& in) {  // Samples -> Chips
+      return complexPack(downsample(real(in), args.samplesPerSymbol, filters.downModelDelay),
+                         downsample(imag(in), args.samplesPerSymbol, filters.downModelDelay));
+    };
+    auto defineRxDespread = [&](const Signal& in) {
+      return complexPack(filter::fir(real(in), pnCodeRev), filter::fir(imag(in), pnCodeRev));
+    };
+    auto defineRxSymDecim = [&](const Signal& in) {  // Chips -> Symbols
+      Signal const i =
+          scale(downsample(real(in), args.chipLen, args.chipLen - 1), 1.0F / args.chipLen);
+      Signal const q =
+          scale(downsample(imag(in), args.chipLen, args.chipLen - 1), 1.0F / args.chipLen);
+      return complexPack(i, q);
+    };
+    auto defineRxDemap = [&](const Signal& in) {
+      return (scheme == ModemScheme::PSK) ? modem::pskDemap(real(in), imag(in), args.order)
+                                          : modem::qamDemap(real(in), imag(in), args.order);
+    };
+
+    std::vector<BenchStepSpec> chainSteps;
+    chainSteps.push_back({"TX Map", prism::ScalarType::F32, true, defineTxMap});
+    chainSteps.push_back({"TX Spread", prism::ScalarType::C32, true, defineTxSpread});
+    chainSteps.push_back({"TX Upsample", prism::ScalarType::C32, true, defineTxUp});
+    chainSteps.push_back({"TX Shaping", prism::ScalarType::C32, true, defineTxShape});
+    chainSteps.push_back({"RX LPF", prism::ScalarType::C32, true, defineRxLpf});
+    chainSteps.push_back({"RX Matched", prism::ScalarType::C32, true, defineRxMatch});
+    chainSteps.push_back({"RX Downsample", prism::ScalarType::C32, true, defineRxDown});
+    chainSteps.push_back({"RX Despread", prism::ScalarType::C32, true, defineRxDespread});
+    chainSteps.push_back({"RX SymDecim", prism::ScalarType::C32, true, defineRxSymDecim});
+    chainSteps.push_back({"RX Demap", prism::ScalarType::C32, false, defineRxDemap});
+
+    auto txOutCpu = txChainCpu.run(symbols);
+    runStandardBenchmarks(
+        args, [&](const Halide::Buffer<real32_t>& in) { return txChainCpu.run(in); },
+        [&](const Halide::Buffer<real32_t>& in) { return rxChainCpu.run(in); }, symbols, txOutCpu,
+        txChainCpu.targetName());
+    runBenchSteps(args, txChainCpu.targetName(), ExecMode::CPU, args.cpuScheduleTx, symbols,
+                  chainSteps);
+
+    if (gpuAvailable() && txChainGpu && rxChainGpu) {
+      auto txOutGpu = txChainGpu->run(symbols);
+      runStandardBenchmarks(
+          args, [&](const Halide::Buffer<real32_t>& in) { return txChainGpu->run(in); },
+          [&](const Halide::Buffer<real32_t>& in) { return rxChainGpu->run(in); }, symbols,
+          txOutGpu, txChainGpu->targetName());
+      runBenchSteps(args, txChainGpu->targetName(), ExecMode::GPU, args.gpuScheduleTx, symbols,
+                    chainSteps);
+    }
+  }
+  // --------------------------------------------------------------------------
+  // 3. BER
+  // --------------------------------------------------------------------------
+  if (args.enableGpu && txChainGpu && rxChainGpu) {
+    runStandardBer(args, *txChainGpu, *rxChainGpu);
   } else {
-    std::cout << "\nGPU 模式跳过\n";
+    runStandardBer(args, txChainCpu, rxChainCpu);
   }
 
   // --------------------------------------------------------------------------
-  // BER 仿真
+  // 4. Dump Data
   // --------------------------------------------------------------------------
-  std::cout << "\nBER 仿真 (SNR 以扩频后序列为基准):\n";
-  std::cout << "  SNR(dB)      BER        BitErrors/TotalBits\n";
-
-  for (double const snrDb : args.snrList) {
-    int64_t totalBits = 0;
-    int64_t totalErrors = 0;
-
-    for (int iter = 0; iter < args.iters; ++iter) {
-      auto symbolsIter = generateSymbols(args.symbols, args.order, rng);
-      auto inputIter = vectorToBuffer(symbolsIter);
-      auto iq = mapCpu.run(inputIter);
-
-      auto spreadBuf = spreadCpu.run(iq);
-      auto spreadVec = bufferToVector(spreadBuf);
-      auto noisy = prism::simulation::awgn(spreadVec, snrDb, &rng);
-      auto noisyBuf = vectorToBuffer(noisy);
-      auto despreadBuf = despreadCpu.run(noisyBuf);
-      auto demapOut = demapCpu.run(despreadBuf);
-
-      ErrorStats const stats = compareSymbols(symbolsIter, demapOut, bits);
-      totalBits += stats.totalBits;
-      totalErrors += stats.bitErrors;
+  if (args.output.enable) {
+    std::cout << "\n正在导出仿真数据 (SNR=" << args.snrList[0] << "dB)...\n";
+    // Dump Static PN Code first
+    std::string dumpErr;
+    if (shouldDumpStep(args.output, "pn_code")) {
+      dumpCsv(args.output, "pn_code", args.pnCode, dumpErr);
     }
 
-    double const ber = (totalBits == 0) ? 0.0
-                                        : static_cast<double>(totalErrors) /
-                                              static_cast<double>(totalBits);
-    std::cout << "  " << std::setw(6) << std::fixed << std::setprecision(1)
-              << snrDb << "   " << std::scientific << std::setprecision(3)
-              << ber << "   " << std::fixed << totalErrors << "/" << totalBits
-              << "\n";
-  }
+    prism::simulation::RNG rng(args.seed);
+    auto symbols = vectorToBuffer(randomSymbols<real32_t>(args.symbols, args.order, &rng));
 
+    std::string backendName =
+        args.enableGpu && txChainGpu ? txChainGpu->targetName() : txChainCpu.targetName();
+    StandardInspector inspector(backendName);
+    ExecMode const mode = (args.enableGpu && txChainGpu) ? ExecMode::GPU : ExecMode::CPU;
+
+    // 1. Map
+    auto stepMap = Executor::compile<real32_t>(
+        (scheme == ModemScheme::PSK) ? modem::pskMap(Signal::input(args.symbols), args.order)
+                                     : modem::qamMap(Signal::input(args.symbols), args.order),
+        mode, (mode == ExecMode::GPU) ? args.gpuScheduleTx : args.cpuScheduleTx);
+    inspector.addStep("mapped_iq", [&](const auto& in) { return stepMap.run(in); }, true);
+
+    // 2. Spread
+    auto defineSpread = [&](const Signal& in) {
+      Signal const spreadI = filter::fir(upsample(real(in), args.chipLen), args.pnCode);
+      Signal const spreadQ = filter::fir(upsample(imag(in), args.chipLen), args.pnCode);
+      return complexPack(spreadI, spreadQ);
+    };
+    auto stepSpread = Executor::compile<real32_t>(
+        defineSpread(Signal::input(args.symbols, prism::ScalarType::C32)), mode,
+        (mode == ExecMode::GPU) ? args.gpuScheduleTx : args.cpuScheduleTx);
+    inspector.addStep("spread_iq", [&](const auto& in) { return stepSpread.run(in); }, true);
+
+    // 3. Up + Shape (TX)
+    auto defineTxShape = [&](const Signal& in) {
+      Signal const upI = upsample(real(in), args.samplesPerSymbol);
+      Signal const upQ = upsample(imag(in), args.samplesPerSymbol);
+      Signal const shapeI = filter::fir(upI, filters.shapingTaps);
+      Signal const shapeQ = filter::fir(upQ, filters.shapingTaps);
+      return complexPack(shapeI, shapeQ);
+    };
+    auto stepTx = Executor::compile<real32_t>(
+        defineTxShape(Signal::input(args.symbols * args.chipLen, prism::ScalarType::C32)), mode,
+        (mode == ExecMode::GPU) ? args.gpuScheduleTx : args.cpuScheduleTx);
+    inspector.addStep("tx_shaped_iq", [&](const auto& in) { return stepTx.run(in); }, true);
+
+    // 4. Channel (Software)
+    inspector.addStep(
+        "rx_iq",
+        [&](const auto& in) {
+          prism::simulation::RNG r(args.seed);
+          auto vec = bufferToVector(in);
+          auto bb = interleavedToComplex(vec);
+          auto up = mixComplex(bb, args.carrierHz, args.sampleRateHz, args.txPhaseRad);
+          auto ch = applyChannel(up, args.channel, args.sampleRateHz, args.snrList[0], r);
+          auto down = mixComplex(ch, -(args.carrierHz + args.rxLoOffsetHz), args.sampleRateHz,
+                                 args.rxPhaseRad);
+          return complexToBuffer(down);
+        },
+        true);
+
+    // 5. RX
+    if (mode == ExecMode::GPU) {
+      inspector.addStep("demapped", [&](const auto& in) { return rxChainGpu->run(in); }, false);
+    } else {
+      inspector.addStep("demapped", [&](const auto& in) { return rxChainCpu.run(in); }, false);
+    }
+
+    inspector.exportStepData(args, symbols);
+  }
   prism::shutdown();
   return 0;
 }

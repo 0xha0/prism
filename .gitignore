@@ -3,6 +3,7 @@ build/
 cmake-build-*/
 out/
 docs/generated
+outputs/
 
 # IDE
 .idea/

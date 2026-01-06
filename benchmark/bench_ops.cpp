@@ -1,15 +1,13 @@
 /**
  * @file bench_ops.cpp
  * @ingroup benchmarks
- * @brief DSL 全部算子性能测试
+ * @brief 基础算子性能基准测试
  *
- * 比较 CPU vs GPU，JIT vs AOT
+ * 评估基础数学算子 (Add, Sub, Mul, Div, Scale, Abs) 的性能
+ * 这些算子通常是 Memory-Bound (带宽受限) 的，
+ * 测试旨在观察不同后端在处理简单向量化操作时的吞吐能力
  */
 
-#include <Halide.h>
-
-#include <iomanip>
-#include <iostream>
 #include <string>
 
 #include "bench_util.h"
@@ -20,6 +18,7 @@
 
 using prism::real32_t;
 using prism::real64_t;
+using prism::ScalarType;
 using namespace prism::dsl;
 using namespace prism::runtime;
 using namespace prism::benchmark;
@@ -27,87 +26,64 @@ using namespace prism::benchmark;
 /// @addtogroup benchmarks
 /// @{
 
-/** @brief 打印操作基准表头 */
-static void printHeader() {
-  std::cout << std::setw(18) << "Operation" << std::setw(11) << "JIT CPU"
-            << std::setw(11) << "JIT GPU" << std::setw(11) << "AOT CPU"
-            << std::setw(11) << "AOT GPU"
-            << "\n";
-  BenchPrinter::printSeparator(62);
+template <typename T, typename BuildFunc>
+static void benchOp(const std::string& baseName, int size, int iterations, BuildFunc buildFn) {
+  using Traits = BenchTraits<T>;
+  auto buf = Traits::makeBuffer(size);
+  Traits::fillLinear(buf);
+
+  auto sig = buildFn(size, Traits::scalarType());
+  auto times = BenchmarkRunner::runSignalBench<T>(sig, buf, iterations);
+
+  BenchPrinter::printBenchResult(withPrecision<T>(baseName), times);
 }
 
-static void printResult(const std::string& name, real64_t jc, real64_t jg,
-                        real64_t ac, real64_t ag) {
-  std::cout << std::setw(18) << name << std::fixed << std::setprecision(3);
-  std::cout << std::setw(9) << jc << "ms";
-  std::cout << std::setw(9) << (jg > 0 ? jg : 0) << (jg > 0 ? "ms" : "  ");
-  std::cout << std::setw(9) << ac << "ms";
-  std::cout << std::setw(9) << (ag > 0 ? ag : 0) << (ag > 0 ? "ms" : "  ");
-  std::cout << "\n";
-}
+template <typename T>
+static void benchOpsForType(int size, int iterations) {
+  benchOp<T>("Add", size, iterations, [](int s, ScalarType type) {
+    auto a = Signal::input(s, type);
+    return add(a, a);
+  });
 
-template <typename BuildFunc>
-static void benchOp(const std::string& name, int size, BuildFunc buildFn) {
-  Halide::Buffer<real32_t> buf(size);
-  for (int i = 0; i < size; ++i) buf(i) = static_cast<real32_t>(i);
+  benchOp<T>("Sub", size, iterations, [](int s, ScalarType type) {
+    auto a = Signal::input(s, type);
+    return sub(a, a);
+  });
 
-  auto sig = buildFn(size);
+  benchOp<T>("Mul", size, iterations, [](int s, ScalarType type) {
+    auto a = Signal::input(s, type);
+    return mul(a, a);
+  });
 
-  Executor::setMode(ExecMode::CPU);
-  real64_t const jc =
-      BenchmarkRunner::run([&]() { Executor::run<real32_t>(sig, buf); });
+  benchOp<T>("Div", size, iterations, [](int s, ScalarType type) {
+    auto a = Signal::input(s, type);
+    return div(a, a);
+  });
 
-  Executor::setMode(ExecMode::GPU);
-  real64_t const jg =
-      BenchmarkRunner::run([&]() { Executor::run<real32_t>(sig, buf); });
+  benchOp<T>("Scale", size, iterations, [](int s, ScalarType type) {
+    return scale(Signal::input(s, type), static_cast<T>(2.5));
+  });
 
-  auto pc = Executor::compile<real32_t>(sig, ExecMode::CPU);
-  real64_t const ac = BenchmarkRunner::run([&]() { pc.run(buf); });
+  benchOp<T>("Abs", size, iterations,
+             [](int s, ScalarType type) { return abs(Signal::input(s, type)); });
 
-  auto pg = Executor::compile<real32_t>(sig, ExecMode::GPU);
-  real64_t const ag = BenchmarkRunner::run([&]() { pg.run(buf); });
-
-  printResult(name, jc, jg, ac, ag);
+  benchOp<T>("Scale+Abs", size, iterations, [](int s, ScalarType type) {
+    return abs(scale(Signal::input(s, type), static_cast<T>(2.5)));
+  });
 }
 
 int main() {
   BenchPrinter::printSuiteHeader("Ops");
   BenchPrinter::printBackendInfo();
 
-  constexpr int testSize = 102400;
-  printHeader();
+  int const testSize = benchSize(102400);
+  int const iterations = benchIterations(100);
+  BenchPrinter::printBenchHeader("Operation");
 
-  benchOp("Add", testSize, [](int s) {
-    auto a = Signal::input(s);
-    auto b = Signal::input(s);
-    return add(a, b);
+  forEachPrecision<real32_t, real64_t>([&](auto tag) {
+    using T = typename decltype(tag)::type;
+    benchOpsForType<T>(testSize, iterations);
   });
-
-  benchOp("Sub", testSize, [](int s) {
-    auto a = Signal::input(s);
-    auto b = Signal::input(s);
-    return sub(a, b);
-  });
-
-  benchOp("Mul", testSize, [](int s) {
-    auto a = Signal::input(s);
-    auto b = Signal::input(s);
-    return mul(a, b);
-  });
-
-  benchOp("Div", testSize, [](int s) {
-    auto a = Signal::input(s);
-    auto b = Signal::input(s);
-    return div(a, b);
-  });
-
-  benchOp("Scale", testSize,
-          [](int s) { return scale(Signal::input(s), 2.5); });
-
-  benchOp("Abs", testSize, [](int s) { return abs(Signal::input(s)); });
-
-  benchOp("Scale+Abs", testSize,
-          [](int s) { return abs(scale(Signal::input(s), 2.5)); });
 
   BenchPrinter::printSummary();
   Executor::setMode(ExecMode::AUTO);

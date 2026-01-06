@@ -39,10 +39,29 @@ endfunction()
 
 prism_define_bool_option(PRISM_BUILD_TESTS ON "构建单元测试")
 prism_define_bool_option(PRISM_BUILD_EXAMPLES ON "构建示例程序")
+prism_define_bool_option(PRISM_BUILD_BENCHMARKS ON "构建基准程序")
 
-set(_PRISM_BENCH_DEFAULT "${PRISM_BUILD_EXAMPLES}")
-prism_define_bool_option(PRISM_BUILD_BENCHMARKS "${_PRISM_BENCH_DEFAULT}" "构建基准程序")
-unset(_PRISM_BENCH_DEFAULT)
+set(_default_anderson_scripts_dir "")
+if(EXISTS "${CMAKE_SOURCE_DIR}/misc/scripts/utils.sh")
+    set(_default_anderson_scripts_dir "${CMAKE_SOURCE_DIR}/misc/scripts")
+endif()
+if(NOT DEFINED CACHE{PRISM_ANDERSON2021_SCRIPTS_DIR})
+    set(PRISM_ANDERSON2021_SCRIPTS_DIR "${_default_anderson_scripts_dir}"
+        CACHE PATH "Halide anderson2021 scripts 目录（包含 utils.sh）")
+elseif(PRISM_ANDERSON2021_SCRIPTS_DIR STREQUAL "" AND
+       NOT _default_anderson_scripts_dir STREQUAL "")
+    set(PRISM_ANDERSON2021_SCRIPTS_DIR "${_default_anderson_scripts_dir}"
+        CACHE PATH "Halide anderson2021 scripts 目录（包含 utils.sh）" FORCE)
+endif()
+unset(_default_anderson_scripts_dir)
+
+find_program(PRISM_NVIDIA_SMI_BIN nvidia-smi)
+if(PRISM_NVIDIA_SMI_BIN)
+    set(PRISM_AUTOTUNE_FAKE_NVIDIA_SMI OFF)
+else()
+    set(PRISM_AUTOTUNE_FAKE_NVIDIA_SMI ON)
+endif()
+
 
 # 后端选项：支持 local.cmake 覆盖
 if(NOT DEFINED PRISM_USE_VDSP)
@@ -114,6 +133,52 @@ message(STATUS "[核心依赖] Halide: ${Halide_VERSION}")
 
 # OpenCL 检测
 find_package(OpenCL QUIET)
+
+find_package(PNG QUIET)
+find_package(JPEG QUIET)
+
+set(PRISM_AUTOTUNE_PNG_CFLAGS "")
+set(PRISM_AUTOTUNE_PNG_LIBS "")
+if(PNG_FOUND)
+    foreach(_dir IN LISTS PNG_INCLUDE_DIRS)
+        string(APPEND PRISM_AUTOTUNE_PNG_CFLAGS " -I${_dir}")
+    endforeach()
+    string(STRIP "${PRISM_AUTOTUNE_PNG_CFLAGS}" PRISM_AUTOTUNE_PNG_CFLAGS)
+    foreach(_lib IN LISTS PNG_LIBRARIES)
+        string(APPEND PRISM_AUTOTUNE_PNG_LIBS " ${_lib}")
+    endforeach()
+    string(STRIP "${PRISM_AUTOTUNE_PNG_LIBS}" PRISM_AUTOTUNE_PNG_LIBS)
+endif()
+
+set(PRISM_AUTOTUNE_JPEG_CFLAGS "")
+set(PRISM_AUTOTUNE_JPEG_LIBS "")
+if(JPEG_FOUND)
+    set(_jpeg_includes "")
+    if(DEFINED JPEG_INCLUDE_DIR)
+        list(APPEND _jpeg_includes "${JPEG_INCLUDE_DIR}")
+    endif()
+    if(DEFINED JPEG_INCLUDE_DIRS)
+        list(APPEND _jpeg_includes ${JPEG_INCLUDE_DIRS})
+    endif()
+    foreach(_dir IN LISTS _jpeg_includes)
+        string(APPEND PRISM_AUTOTUNE_JPEG_CFLAGS " -I${_dir}")
+    endforeach()
+    string(STRIP "${PRISM_AUTOTUNE_JPEG_CFLAGS}" PRISM_AUTOTUNE_JPEG_CFLAGS)
+    if(DEFINED JPEG_LIBRARIES)
+        foreach(_lib IN LISTS JPEG_LIBRARIES)
+            string(APPEND PRISM_AUTOTUNE_JPEG_LIBS " ${_lib}")
+        endforeach()
+    elseif(DEFINED JPEG_LIBRARY)
+        string(APPEND PRISM_AUTOTUNE_JPEG_LIBS " ${JPEG_LIBRARY}")
+    endif()
+    string(STRIP "${PRISM_AUTOTUNE_JPEG_LIBS}" PRISM_AUTOTUNE_JPEG_LIBS)
+    unset(_jpeg_includes)
+endif()
+
+set(PRISM_AUTOTUNE_FRAMEWORKS "")
+if(APPLE)
+    set(PRISM_AUTOTUNE_FRAMEWORKS "-framework Metal -framework Foundation")
+endif()
 
 set(VKFFT_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/external/vkfft/vkFFT")
 set(VKFFT_METALCPP_DIR "${CMAKE_SOURCE_DIR}/external/vkfft/metal-cpp")
@@ -204,9 +269,7 @@ set(PRISM_SOURCES
     src/runtime/convolution_handlers.cpp
     src/runtime/filter_handlers.cpp
     src/runtime/modem_handlers.cpp
-    src/backend/backend_registry.cpp
     src/backend/fft_backend.cpp
-
     src/simulation/rng.cpp
 )
 
@@ -245,6 +308,7 @@ set(PRISM_HEADERS
     include/prism/dsl/modem.h
     include/prism/runtime/executor.h
     include/prism/runtime/fft.h
+    include/prism/runtime/halide_builder.h
     include/prism/backend/fft_backend.h
     include/prism/backend/backend_registry.h
 )
@@ -259,6 +323,134 @@ target_include_directories(prism
 )
 
 target_link_libraries(prism PUBLIC Halide::Halide)
+function(prism_define_autoscheduler_path target autoscheduler macro_name)
+    if(NOT TARGET ${autoscheduler})
+        return()
+    endif()
+    get_target_property(_loc ${autoscheduler} IMPORTED_LOCATION)
+    if(NOT _loc)
+        get_target_property(_loc ${autoscheduler} IMPORTED_LOCATION_RELEASE)
+    endif()
+    if(NOT _loc)
+        get_target_property(_loc ${autoscheduler} IMPORTED_LOCATION_NOCONFIG)
+    endif()
+    if(_loc)
+        target_compile_definitions(${target} PRIVATE ${macro_name}="${_loc}")
+    endif()
+endfunction()
+
+function(prism_define_autoscheduler_path_by_name target basename macro_name)
+    if(NOT TARGET Halide::Halide)
+        return()
+    endif()
+    get_target_property(_halide_loc Halide::Halide IMPORTED_LOCATION)
+    if(NOT _halide_loc)
+        get_target_property(_halide_loc Halide::Halide IMPORTED_LOCATION_RELEASE)
+    endif()
+    if(NOT _halide_loc)
+        get_target_property(_halide_loc Halide::Halide IMPORTED_LOCATION_NOCONFIG)
+    endif()
+    if(NOT _halide_loc)
+        return()
+    endif()
+    get_filename_component(_halide_dir "${_halide_loc}" DIRECTORY)
+    set(_candidate "${_halide_dir}/libautoschedule_${basename}.so")
+    if(EXISTS "${_candidate}")
+        target_compile_definitions(${target} PRIVATE ${macro_name}="${_candidate}")
+    endif()
+endfunction()
+
+function(prism_add_halide_tools_include target)
+    if(NOT TARGET Halide::Halide)
+        return()
+    endif()
+    get_target_property(_halide_loc Halide::Halide IMPORTED_LOCATION)
+    if(NOT _halide_loc)
+        get_target_property(_halide_loc Halide::Halide IMPORTED_LOCATION_RELEASE)
+    endif()
+    if(NOT _halide_loc)
+        get_target_property(_halide_loc Halide::Halide IMPORTED_LOCATION_NOCONFIG)
+    endif()
+    if(NOT _halide_loc)
+        return()
+    endif()
+    get_filename_component(_halide_dir "${_halide_loc}" DIRECTORY)
+    get_filename_component(_halide_prefix "${_halide_dir}" DIRECTORY)
+    set(_tools_dir "${_halide_prefix}/share/tools")
+    if(EXISTS "${_tools_dir}/halide_benchmark.h")
+        target_include_directories(${target} PRIVATE "${_tools_dir}")
+    endif()
+endfunction()
+
+function(prism_get_halide_prefix out_var)
+    if(NOT TARGET Halide::Halide)
+        return()
+    endif()
+    get_target_property(_halide_loc Halide::Halide IMPORTED_LOCATION)
+    if(NOT _halide_loc)
+        get_target_property(_halide_loc Halide::Halide IMPORTED_LOCATION_RELEASE)
+    endif()
+    if(NOT _halide_loc)
+        get_target_property(_halide_loc Halide::Halide IMPORTED_LOCATION_NOCONFIG)
+    endif()
+    if(NOT _halide_loc)
+        return()
+    endif()
+    get_filename_component(_halide_dir "${_halide_loc}" DIRECTORY)
+    get_filename_component(_halide_prefix "${_halide_dir}" DIRECTORY)
+    set(${out_var} "${_halide_prefix}" PARENT_SCOPE)
+endfunction()
+
+prism_get_halide_prefix(PRISM_HALIDE_PREFIX)
+if(PRISM_HALIDE_PREFIX)
+    set(PRISM_AUTOTUNE_DIR "${CMAKE_BINARY_DIR}/autotune")
+    add_custom_target(prism_autotune_setup
+        COMMAND ${CMAKE_COMMAND}
+            -DAUTOTUNE_DIR="${PRISM_AUTOTUNE_DIR}"
+            -DHALIDE_PREFIX="${PRISM_HALIDE_PREFIX}"
+            -DCMAKE_CXX_COMPILER="${CMAKE_CXX_COMPILER}"
+            -DCREATE_FAKE_NVIDIA_SMI=${PRISM_AUTOTUNE_FAKE_NVIDIA_SMI}
+            -DANDERSON2021_SCRIPTS_DIR="${PRISM_ANDERSON2021_SCRIPTS_DIR}"
+            -DPRISM_AUTOTUNE_PNG_CFLAGS="${PRISM_AUTOTUNE_PNG_CFLAGS}"
+            -DPRISM_AUTOTUNE_PNG_LIBS="${PRISM_AUTOTUNE_PNG_LIBS}"
+            -DPRISM_AUTOTUNE_JPEG_CFLAGS="${PRISM_AUTOTUNE_JPEG_CFLAGS}"
+            -DPRISM_AUTOTUNE_JPEG_LIBS="${PRISM_AUTOTUNE_JPEG_LIBS}"
+            -DPRISM_AUTOTUNE_FRAMEWORKS="${PRISM_AUTOTUNE_FRAMEWORKS}"
+            -P "${CMAKE_SOURCE_DIR}/cmake/autotune_setup.cmake"
+        COMMENT "Prepare Halide autotune environment under ${PRISM_AUTOTUNE_DIR}"
+    )
+endif()
+
+function(prism_link_halide_generator target)
+    if(TARGET Halide::Generator)
+        target_link_libraries(${target} PRIVATE Halide::Generator)
+    else()
+        target_link_libraries(${target} PRIVATE Halide::Halide)
+    endif()
+endfunction()
+
+if(NOT APPLE)
+    if(TARGET Halide::Mullapudi2016)
+        target_link_libraries(prism PUBLIC Halide::Mullapudi2016)
+    endif()
+    if(TARGET Halide::Adams2019)
+        target_link_libraries(prism PUBLIC Halide::Adams2019)
+    endif()
+    if(TARGET Halide::Anderson2021)
+        target_link_libraries(prism PUBLIC Halide::Anderson2021)
+    endif()
+endif()
+
+prism_define_autoscheduler_path(prism Halide::Adams2019
+                                PRISM_AUTOSCHEDULER_ADAMS2019_PATH)
+prism_define_autoscheduler_path(prism Halide::Anderson2021
+                                PRISM_AUTOSCHEDULER_ANDERSON2021_PATH)
+prism_define_autoscheduler_path_by_name(prism adams2019
+                                        PRISM_AUTOSCHEDULER_ADAMS2019_PATH)
+prism_define_autoscheduler_path_by_name(prism anderson2021
+                                        PRISM_AUTOSCHEDULER_ANDERSON2021_PATH)
+prism_define_autoscheduler_path_by_name(prism mullapudi2016
+                                        PRISM_AUTOSCHEDULER_MULLAPUDI2016_PATH)
 
 if(PRISM_HAS_VDSP)
     target_compile_definitions(prism PUBLIC PRISM_HAS_VDSP=1)
@@ -305,6 +497,18 @@ if(PRISM_GPU_BACKEND STREQUAL "OpenCL")
     target_link_libraries(prism PUBLIC OpenCL::OpenCL)
 endif()
 
+# Metal 链接（如果使用）
+if(PRISM_GPU_BACKEND STREQUAL "Metal")
+    find_library(METAL_FRAMEWORK Metal REQUIRED)
+    find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
+    target_link_libraries(prism PUBLIC ${METAL_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
+endif()
+
+# CUDA 运行时链接（如果使用）
+if(PRISM_GPU_BACKEND STREQUAL "CUDA")
+    target_link_libraries(prism PUBLIC CUDA::cudart)
+endif()
+
 # ============================================================================
 # 测试
 # ============================================================================
@@ -342,13 +546,45 @@ endif()
 # ============================================================================
 
 if(PRISM_BUILD_EXAMPLES)
-    add_executable(example_apm_basic examples/apm_basic/main.cpp)
+    add_executable(example_apm_basic examples/apm_basic/main.cpp examples/example_helper.cpp)
     target_link_libraries(example_apm_basic PRIVATE prism Halide::Halide)
-    target_include_directories(example_apm_basic PRIVATE ${CMAKE_SOURCE_DIR}/external/cxxopts/include)
+    target_include_directories(example_apm_basic PRIVATE
+        ${CMAKE_SOURCE_DIR}/examples
+        ${CMAKE_SOURCE_DIR}/external/tomlplusplus/include
+    )
+    prism_add_halide_tools_include(example_apm_basic)
 
-    add_executable(example_apm_dsss examples/apm_dsss/main.cpp)
+    add_executable(example_apm_basic_autotune
+        examples/apm_basic/autotune.cpp
+        examples/example_helper.cpp
+    )
+    target_link_libraries(example_apm_basic_autotune PRIVATE prism)
+    prism_link_halide_generator(example_apm_basic_autotune)
+    target_include_directories(example_apm_basic_autotune PRIVATE
+        ${CMAKE_SOURCE_DIR}/examples
+        ${CMAKE_SOURCE_DIR}/external/tomlplusplus/include
+    )
+    prism_add_halide_tools_include(example_apm_basic_autotune)
+
+    add_executable(example_apm_dsss examples/apm_dsss/main.cpp examples/example_helper.cpp)
     target_link_libraries(example_apm_dsss PRIVATE prism Halide::Halide)
-    target_include_directories(example_apm_dsss PRIVATE ${CMAKE_SOURCE_DIR}/external/cxxopts/include)
+    target_include_directories(example_apm_dsss PRIVATE
+        ${CMAKE_SOURCE_DIR}/examples
+        ${CMAKE_SOURCE_DIR}/external/tomlplusplus/include
+    )
+    prism_add_halide_tools_include(example_apm_dsss)
+
+    add_executable(example_apm_dsss_autotune
+        examples/apm_dsss/autotune.cpp
+        examples/example_helper.cpp
+    )
+    target_link_libraries(example_apm_dsss_autotune PRIVATE prism)
+    prism_link_halide_generator(example_apm_dsss_autotune)
+    target_include_directories(example_apm_dsss_autotune PRIVATE
+        ${CMAKE_SOURCE_DIR}/examples
+        ${CMAKE_SOURCE_DIR}/external/tomlplusplus/include
+    )
+    prism_add_halide_tools_include(example_apm_dsss_autotune)
 endif()
 
 # ============================================================================
@@ -364,6 +600,9 @@ if(PRISM_BUILD_BENCHMARKS)
 
     add_executable(bench_filter benchmark/bench_filter.cpp)
     target_link_libraries(bench_filter PRIVATE prism Halide::Halide)
+
+    add_executable(bench_adv_ops benchmark/bench_adv_ops.cpp)
+    target_link_libraries(bench_adv_ops PRIVATE prism Halide::Halide)
 
     add_executable(bench_modem benchmark/bench_modem.cpp)
     target_link_libraries(bench_modem PRIVATE prism Halide::Halide)

@@ -1,6 +1,6 @@
 # Doxyfile for PRISM
 # PRISM - Parallel RF Instructions for Signal Manipulation
-# 基于 Halide 的跨平台信号处理加速库
+# 基于 Halide 信号处理算子集
 
 #---------------------------------------------------------------------------
 # 项目配置
@@ -8,8 +8,8 @@
 
 PROJECT_NAME           = "PRISM"
 PROJECT_NUMBER         = "0.1.0"
-PROJECT_BRIEF          = "Parallel RF Instructions for Signal Manipulation - 基于 Halide 的跨平台信号处理加速库"
-PROJECT_LOGO           =
+PROJECT_BRIEF          = "Parallel RF Instructions for Signal Manipulation - 基于 Halide 信号处理算子集"
+PROJECT_LOGO           = docs/images/prism_logo.svg
 
 OUTPUT_DIRECTORY       = docs/generated
 CREATE_SUBDIRS         = NO
@@ -58,12 +58,16 @@ INPUT                  = include \
                          src \
                          docs \
                          tests \
-                         benchmark
+                         benchmark \
+                         examples
 INPUT_ENCODING         = UTF-8
 FILE_PATTERNS          = *.h \
                          *.hpp \
                          *.cpp \
-                         *.dox
+                         *.dox \
+                         *.md
+MARKDOWN_SUPPORT       = YES
+EXTENSION_MAPPING      = md=markdown
 RECURSIVE              = YES
 
 EXCLUDE                =
@@ -74,8 +78,9 @@ EXCLUDE_PATTERNS       = */external/* \
 
 EXAMPLE_PATH           = examples
 EXAMPLE_PATTERNS       = *.cpp
-EXAMPLE_RECURSIVE      = NO
+EXAMPLE_RECURSIVE      = YES
 
+INCLUDE_PATH           = .
 IMAGE_PATH             =
 
 #---------------------------------------------------------------------------
@@ -111,6 +116,7 @@ HTML_COLORSTYLE_SAT    = 100
 HTML_COLORSTYLE_GAMMA  = 80
 HTML_DYNAMIC_SECTIONS  = YES
 HTML_INDEX_NUM_ENTRIES = 100
+HTML_EXTRA_STYLESHEET  = docs/doxygen-custom.css
 
 GENERATE_DOCSET        = NO
 GENERATE_HTMLHELP      = NO
@@ -167,12 +173,12 @@ DOT_NUM_THREADS        = 4
 CLASS_GRAPH            = YES
 COLLABORATION_GRAPH    = YES
 GROUP_GRAPHS           = YES
-UML_LOOK               = NO
+UML_LOOK               = YES
 TEMPLATE_RELATIONS     = YES
 INCLUDE_GRAPH          = YES
 INCLUDED_BY_GRAPH      = YES
-CALL_GRAPH             = NO
-CALLER_GRAPH           = NO
+CALL_GRAPH             = YES
+CALLER_GRAPH           = YES
 GRAPHICAL_HIERARCHY    = YES
 DIRECTORY_GRAPH        = YES
 DOT_IMAGE_FORMAT       = svg
@@ -184,3 +190,6 @@ MAX_DOT_GRAPH_DEPTH    = 0
 DOT_MULTI_TARGETS      = NO
 GENERATE_LEGEND        = YES
 DOT_CLEANUP            = YES
+REPEAT_BRIEF           = NO
+LAYOUT_FILE            = docs/DoxygenLayout.xml
+USE_MDFILE_AS_MAINPAGE =

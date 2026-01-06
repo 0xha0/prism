@@ -6,7 +6,9 @@
 
 #include "prism/dsl/filter.h"
 
+#include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include <vector>
 
 #include "prism/dsl/signal.h"
@@ -14,104 +16,63 @@
 
 namespace prism::dsl::filter {
 
-// ============================================================================
-// 核心滤波器
-// ============================================================================
-
 /**
- * @brief 构建单精度 FIR 节点
- * @param x 输入信号
- * @param taps b 系数
- * @param mode 边界策略
+ * @brief 构建 FIR 节点 (模板版本)
  */
-Signal fir(const Signal& x, const std::vector<real32_t>& taps, BndryMode mode) {
+template <typename T>
+Signal fir(const Signal& x, const std::vector<T>& taps, BndryMode mode) {
   auto node = std::make_shared<detail::Node>();
   node->kind = OpKind::FIR;
   node->inputs = {x.node()};
   node->shape = x.shape();
-  node->type = x.type();
-  node->taps = taps;
+  node->inputType = x.type();
+  ScalarType const tapsType = getScalarType<T>();
+  if (!isPrecisionMatch(x.type(), tapsType)) {
+    throw std::invalid_argument("FIR precision mismatch: input and taps must have same precision");
+  }
+  node->outputType = promoteTypes(x.type(), tapsType);
+  node->param = taps;
   node->boundary = mode;
   return Signal(node);
 }
 
-/** @brief 构建双精度 FIR 节点 */
-Signal fir(const Signal& x, const std::vector<real64_t>& taps, BndryMode mode) {
-  auto node = std::make_shared<detail::Node>();
-  node->kind = OpKind::FIR;
-  node->inputs = {x.node()};
-  node->shape = x.shape();
-  node->type = x.type();
-  node->taps64 = taps;
-  node->boundary = mode;
-  return Signal(node);
-}
+template Signal fir<real32_t>(const Signal&, const std::vector<real32_t>&, BndryMode);
+template Signal fir<real64_t>(const Signal&, const std::vector<real64_t>&, BndryMode);
+template Signal fir<complex32_t>(const Signal&, const std::vector<complex32_t>&, BndryMode);
+template Signal fir<complex64_t>(const Signal&, const std::vector<complex64_t>&, BndryMode);
 
 /**
- * @brief 构建单精度 IIR 节点
- * @param b 前向系数
- * @param a 反馈系数（a[0] 需为 1）
- * @param mode 边界策略
- */
-Signal iir(const Signal& x, const std::vector<real32_t>& b,
-           const std::vector<real32_t>& a, BndryMode mode) {
-  auto node = std::make_shared<detail::Node>();
-  node->kind = OpKind::IIR;
-  node->inputs = {x.node()};
-  node->shape = x.shape();
-  node->type = x.type();
-  node->taps = b;
-  node->tapsA = a;
-  node->boundary = mode;
-  return Signal(node);
-}
-
-/** @brief 构建双精度 IIR 节点 */
-Signal iir(const Signal& x, const std::vector<real64_t>& b,
-           const std::vector<real64_t>& a, BndryMode mode) {
-  auto node = std::make_shared<detail::Node>();
-  node->kind = OpKind::IIR;
-  node->inputs = {x.node()};
-  node->shape = x.shape();
-  node->type = x.type();
-  node->taps64 = b;
-  node->tapsA64 = a;
-  node->boundary = mode;
-  return Signal(node);
-}
-
-// ============================================================================
-// 滑动窗口滤波器
-// ============================================================================
-
-/**
- * @brief 移动平均（窗口长度存入 scalar）
- * @param window 窗口长度（样本数）
- * @param mode 边界策略
+ * @brief 移动平均滤波器工厂
+ *
+ * 构建 OpKind::MOVING_AVERAGE 节点
+ * 窗口大小 N 暂存入 `node->param`
  */
 Signal movingAverage(const Signal& x, int window, BndryMode mode) {
   auto node = std::make_shared<detail::Node>();
   node->kind = OpKind::MOVING_AVERAGE;
   node->inputs = {x.node()};
   node->shape = x.shape();
-  node->type = x.type();
-  node->scalar = static_cast<real64_t>(window);
+  node->inputType = x.type();
+  node->outputType = x.type();
+  node->param = static_cast<int32_t>(window);
   node->boundary = mode;
   return Signal(node);
 }
 
 /**
- * @brief 中值滤波器
- * @param window 窗口长度（建议奇数）
- * @param mode 边界策略
+ * @brief 中值滤波器工厂
+ *
+ * 构建 OpKind::MEDIAN 节点
+ * 窗口大小 W 暂存入 `node->param`
  */
 Signal median(const Signal& x, int window, BndryMode mode) {
   auto node = std::make_shared<detail::Node>();
   node->kind = OpKind::MEDIAN;
   node->inputs = {x.node()};
   node->shape = x.shape();
-  node->type = x.type();
-  node->scalar = static_cast<real64_t>(window);
+  node->inputType = x.type();
+  node->outputType = x.type();
+  node->param = static_cast<int32_t>(window);
   node->boundary = mode;
   return Signal(node);
 }

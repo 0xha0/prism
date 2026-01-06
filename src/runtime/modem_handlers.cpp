@@ -1,12 +1,15 @@
 /**
  * @file modem_handlers.cpp
  * @ingroup runtime
- * @brief 调制解调相关 Handler：Mixer、QAMMap、QAMDemap
+ * @brief 调制解调相关 Handler 实现：Mixer、QAMMap、QAMDemap
+ *
+ * 实现了混频、QAM/PSK 星座图映射及硬判决解映射的 Halide 转换
  */
 
 #include <Halide.h>
 
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 #include "prism/dsl/signal.h"
@@ -18,391 +21,262 @@ namespace prism::runtime {
 /// @addtogroup runtime
 /// @{
 
-// ============================================================================
-// 混频器
-// ============================================================================
-
-/// 混频：乘以旋转相位
+/**
+ * @brief Handle Mixer 算子
+ *
+ * $y[n] = x[n] \cdot e^{j \omega n}$
+ *
+ * 其中 $\omega = 2\pi \cdot \frac{f}{f_s}$
+ * 实现了复数相乘的展开形式：
+ * $ (Ar + jAi)(\cos + j\sin) = (Ar\cos - Ai\sin) + j(Ar\sin + Ai\cos) $
+ */
 template <typename T>
 Halide::Func handleMixer(const dsl::detail::Node* node, OpContext<T>& ctx,
                          const std::vector<Halide::Var>& args) {
   auto a = ctx.buildFunc(dsl::Signal::fromNode(node->inputs.at(0)));
-  real64_t const freq = node->freq;
-  real64_t const sampleRate = node->sampleRate;
+  const auto& params = std::get<std::vector<real64_t>>(node->param);
+  real64_t const freq = params[0];
+  real64_t const sampleRate = params[1];
   Halide::Expr const omega = Halide::Expr(2.0 * M_PI_VAL * freq / sampleRate);
 
   Halide::Func func;
 
-  if constexpr (IS_COMPLEX_V<T>) {
+  using ElemT = typename ToHalideType<T>::Type;
+  bool const outputComplex = isComplexType(node->outputType);
+  bool const inputComplex = isComplexType(node->inputs[0]->outputType);
+
+  if (outputComplex) {
     Halide::Var const& c = args[0];
     Halide::Var const& x = args[1];
 
     // a(x) * exp(j * omega * n)
     // exp(...) = cos(...) + j sin(...)
     // (ar + j ai)(cos + j sin) = (ar cos - ai sin) + j (ar sin + ai cos)
+    Halide::Expr const ar = inputComplex ? a(0, x) : a(x);
+    Halide::Expr const ai = inputComplex ? a(1, x) : Halide::cast<ElemT>(0);
+    Halide::Expr const cosV = Halide::cos(Halide::cast<ElemT>(x) * Halide::cast<ElemT>(omega));
+    Halide::Expr const sinV = Halide::sin(Halide::cast<ElemT>(x) * Halide::cast<ElemT>(omega));
 
-    Halide::Expr const ar = a(0, x);
-    Halide::Expr const ai = a(1, x);
-    Halide::Expr const cosV =
-        Halide::cos(Halide::cast<typename ToHalideType<T>::Type>(x) *
-                    Halide::cast<typename ToHalideType<T>::Type>(omega));
-    Halide::Expr const sinV =
-        Halide::sin(Halide::cast<typename ToHalideType<T>::Type>(x) *
-                    Halide::cast<typename ToHalideType<T>::Type>(omega));
-
-    func(c, x) =
-        Halide::select(c == 0, ar * cosV - ai * sinV, ar * sinV + ai * cosV);
+    func(c, x) = Halide::mux(c, {ar * cosV - ai * sinV, ar * sinV + ai * cosV});
   } else {
     Halide::Var const& x = args[0];
-    func(x) =
-        a(x) * Halide::cast<T>(Halide::cos(Halide::cast<real32_t>(x) *
-                                           Halide::cast<real32_t>(omega)));
+    Halide::Expr const cosV = Halide::cos(Halide::cast<ElemT>(x) * Halide::cast<ElemT>(omega));
+    func(x) = a(x) * Halide::cast<ElemT>(cosV);
   }
   return func;
 }
 
 REGISTER_OP(MIXER, handleMixer);
 
-// ============================================================================
-// QAMMap（符号映射）—— 完整 I/Q 交织输出
-// ============================================================================
-
 /**
- * @brief QAM 映射：符号索引 -> I/Q 交织输出
+ * @brief Handle QAM Map 算子
  *
- * 输入：长度为 N 的符号索引序列
- * 输出：长度为 2N 的 I/Q 交织序列 [I0, Q0, I1, Q1, ...]
+ * 符号索引 -> I/Q 星座点
  *
- * 映射规则（以 QAM16 为例）：
- * - symbol % sqrt(M) -> I 索引
- * - symbol / sqrt(M) -> Q 索引
- * - 索引归一化到 [-1, 1]
+ * 输入：Real 符号索引 [N]
+ * 输出：Complex I/Q 星座点 [N] (Halide 布局: (c, x))
+ *
+ * 映射规则（矩形 QAM）：
+ * - $I_{idx} = symbol \% \sqrt{M}$
+ * - $Q_{idx} = symbol / \sqrt{M}$
+ * - 归一化到 [-1, 1]: $Val = \frac{2 \cdot idx - (\sqrt{M}-1)}{\sqrt{M}-1}$
  */
 template <typename T>
 Halide::Func handleQamMap(const dsl::detail::Node* node, OpContext<T>& ctx,
                           const std::vector<Halide::Var>& args) {
   auto inputFunc = ctx.buildFunc(dsl::Signal::fromNode(node->inputs.at(0)));
-  int const order = node->modOrder;
+  int const order = std::get<int32_t>(node->param);
   int const sqrtOrder = static_cast<int>(std::sqrt(order));
   int const inputLen = static_cast<int>(node->inputs.at(0)->shape.length);
 
   Halide::Func func;
 
-  if constexpr (IS_COMPLEX_V<T>) {
-    // Output is Complex(c, x)
-    // Input is Symbol Index (Real usually)
-    Halide::Var const& c = args[0];
-    Halide::Var const& x = args[1];  // x is symbol index effectively
+  // qamMap: Real 输入 → Complex 输出
+  // 输出使用 Complex (c, x) 布局
+  Halide::Var const& c = args[0];
+  Halide::Var const& x = args[1];
 
-    // Input is scalar signal of symbols.
-    // inputFunc(x) gives symbol.
-    // We map symbol -> (I, Q)
+  // 输入是 Real (1D)
+  Halide::Expr const symbol = Halide::cast<int>(inputFunc(Halide::clamp(x, 0, inputLen - 1)));
 
-    Halide::Expr symbol = Halide::cast<int>(inputFunc(Halide::clamp(
-        x, 0,
-        inputLen - 1)));  // Assuming input is not args dependent in same way?
-    // Wait, if input is Real, InputFunc is 1D.
-    // But OpContext<T> expects T. If T is Complex, input must be Complex?
-    // No, Mapping takes Real Symbol -> Complex I/Q.
-    // The Input "Symbol" signal should explicitly be Real?
-    // But DSL type propagation might set Mapping output as Complex.
-    // So T=Complex.
-    // Input Signal might be Real. But `ctx.buildFunc` returns `Func` for Input.
-    // If Input is Real, its Func is 1D `f(args[0])`.
-    // If we are in Complex context, `args` has 2 vars.
-    // Using `inputFunc({x})` (constructing vector) is needed?
-    // `buildFunc` returns a `Func`. We can call it with any args we want.
-    // If input is Real, it expects 1 arg.
+  Halide::Expr const iIdx = symbol % sqrtOrder;
+  Halide::Expr const qIdx = symbol / sqrtOrder;
 
-    // THIS IS A KEY PROBLEM: `inputFunc` dimensionality depends on Input Signal
-    // Type, not T (Output Type). `OpContext<T>` is for Output Type? No,
-    // OpContext is generic. But `buildFunc` implementation in `executor.cpp`
-    // uses `T` for everything? Step 767: `buildFunc<T>` calls `handler(node,
-    // ctx, args)`. It recursively compiles inputs with `buildFunc<T>`. This
-    // implicitly forces the entire pipeline to be type `T`.
-    //
-    // So if T=Complex, Input is also treated as Complex?
-    // If Symbol Input is treated as Complex, then `inputFunc` expects (c, x).
-    // But Symbol is scalar. Real part = symbol, Imag part = 0?
-    // Or we just look at Real part?
+  using RealT = typename ToHalideType<T>::Type;
+  Halide::Expr const normFactor = Halide::cast<RealT>(sqrtOrder - 1);
+  Halide::Expr const iVal = (Halide::cast<RealT>(2 * iIdx) - normFactor) / normFactor;
+  Halide::Expr const qVal = (Halide::cast<RealT>(2 * qIdx) - normFactor) / normFactor;
 
-    std::vector<Halide::Var> const inputArgs = {args[0],
-                                                args[1]};  // Pass same args
-    // But if symbol, we want real part `c=0`.
-    // Actually `inputFunc(0, x)` is safer if input is complex.
-
-    symbol = Halide::cast<int>(inputFunc(0, Halide::clamp(x, 0, inputLen - 1)));
-
-    Halide::Expr const iIdx = symbol % sqrtOrder;
-    Halide::Expr const qIdx = symbol / sqrtOrder;
-
-    Halide::Expr const normFactor =
-        Halide::cast<typename ToHalideType<T>::Type>(sqrtOrder - 1);
-    Halide::Expr const iVal =
-        (Halide::cast<typename ToHalideType<T>::Type>(2 * iIdx) - normFactor) /
-        normFactor;
-    Halide::Expr const qVal =
-        (Halide::cast<typename ToHalideType<T>::Type>(2 * qIdx) - normFactor) /
-        normFactor;
-
-    func(c, x) = Halide::select(c == 0, iVal, qVal);
-
-  } else {
-    // T=Real. Output is Interleaved Real.
-    Halide::Var const& x = args[0];
-    Halide::Expr const symIdx = x / 2;
-    Halide::Expr const isI = (x % 2) == 0;
-
-    Halide::Expr const symbol =
-        Halide::cast<int>(inputFunc(Halide::clamp(symIdx, 0, inputLen - 1)));
-
-    Halide::Expr const iIdx = symbol % sqrtOrder;
-    Halide::Expr const qIdx = symbol / sqrtOrder;
-
-    Halide::Expr const normFactor = Halide::cast<T>(sqrtOrder - 1);
-    Halide::Expr const iVal =
-        (Halide::cast<T>(2 * iIdx) - normFactor) / normFactor;
-    Halide::Expr const qVal =
-        (Halide::cast<T>(2 * qIdx) - normFactor) / normFactor;
-
-    func(x) = Halide::select(isI, iVal, qVal);
-  }
+  func(c, x) = Halide::mux(c, {iVal, qVal});
 
   return func;
 }
 
 REGISTER_OP(QAM_MAP, handleQamMap);
 
-// ============================================================================
-// QAMDemap（符号解映射）—— I/Q 交织输入
-// ============================================================================
-
 /**
- * @brief QAM 解映射：I/Q 交织输入 -> 符号索引
+ * @brief Handle QAM Demap 算子
  *
- * 输入：长度为 2N 的 I/Q 交织序列 [I0, Q0, I1, Q1, ...]
- * 输出：长度为 N 的符号索引序列
+ * I/Q 星座点 -> 符号索引（硬判决）
  *
- * 硬判决规则：
- * - 量化 I/Q 到最近的星座点
- * - symbol = q_idx * sqrt(M) + i_idx
+ * 输入：Complex I/Q 星座点 [N]
+ * 输出：Real 符号索引 [N]
+ *
+ * 判决规则：
+ * - 将 I/Q 值反归一化并四舍五入到最近的整数索引
+ * - $symbol = Q_{idx} \cdot \sqrt{M} + I_{idx}$
  */
 template <typename T>
 Halide::Func handleQamDemap(const dsl::detail::Node* node, OpContext<T>& ctx,
                             const std::vector<Halide::Var>& args) {
   auto inputFunc = ctx.buildFunc(dsl::Signal::fromNode(node->inputs.at(0)));
-  int const order = node->modOrder;
+  int const order = std::get<int32_t>(node->param);
   int const sqrtOrder = static_cast<int>(std::sqrt(order));
   int const inputLen = static_cast<int>(node->inputs.at(0)->shape.length);
 
   Halide::Func func;
 
-  if constexpr (IS_COMPLEX_V<T>) {
-    // T=Complex (Output is Complex? No, Output is Symbol Index (Real)).
-    // This is the Friction again.
-    // If T=Complex, `func` must be 2D `(c, x)`.
-    // But Symbol Index is 1D scalar.
-    // So we return `(symbol, 0)`?
+  // qamDemap: Complex 输入 → Real 输出
+  // 输出使用 Real (x) 布局
+  Halide::Var const& x = args[0];
 
-    Halide::Var const& c = args[0];
-    Halide::Var const& x = args[1];
-
-    // Input is Complex Signal (I, Q)
-    Halide::Expr const iVal = inputFunc(0, Halide::clamp(x, 0, inputLen - 1));
-    Halide::Expr const qVal = inputFunc(1, Halide::clamp(x, 0, inputLen - 1));
-
-    Halide::Expr const normFactor =
-        Halide::cast<typename ToHalideType<T>::Type>(sqrtOrder - 1);
-    Halide::Expr const iScaled = iVal * normFactor;
-    Halide::Expr const qScaled = qVal * normFactor;
-
-    Halide::Expr const iIdx = Halide::clamp(
-        Halide::cast<int>(
-            Halide::round((iScaled + normFactor) /
-                          Halide::cast<typename ToHalideType<T>::Type>(2))),
-        0, sqrtOrder - 1);
-    Halide::Expr const qIdx = Halide::clamp(
-        Halide::cast<int>(
-            Halide::round((qScaled + normFactor) /
-                          Halide::cast<typename ToHalideType<T>::Type>(2))),
-        0, sqrtOrder - 1);
-
-    Halide::Expr const symbol = qIdx * sqrtOrder + iIdx;
-
-    func(c, x) = Halide::select(
-        c == 0, Halide::cast<typename ToHalideType<T>::Type>(symbol),
-        Halide::cast<typename ToHalideType<T>::Type>(0));
-
+  Halide::Expr iVal;
+  Halide::Expr qVal;
+  if (node->inputs.size() == 2) {
+    // Dual Real Input (I, Q)
+    auto iFunc = ctx.buildFunc(dsl::Signal::fromNode(node->inputs.at(0)));
+    auto qFunc = ctx.buildFunc(dsl::Signal::fromNode(node->inputs.at(1)));
+    iVal = iFunc(Halide::clamp(x, 0, inputLen - 1));
+    qVal = qFunc(Halide::clamp(x, 0, inputLen - 1));
   } else {
-    Halide::Var const& x = args[0];
-    Halide::Expr const iPos = 2 * x;
-    Halide::Expr const qPos = 2 * x + 1;
-
-    Halide::Expr const iVal = inputFunc(Halide::clamp(iPos, 0, inputLen - 1));
-    Halide::Expr const qVal = inputFunc(Halide::clamp(qPos, 0, inputLen - 1));
-
-    Halide::Expr const normFactor = Halide::cast<T>(sqrtOrder - 1);
-    Halide::Expr const iScaled = iVal * normFactor;
-    Halide::Expr const qScaled = qVal * normFactor;
-
-    Halide::Expr const iIdx =
-        Halide::clamp(Halide::cast<int>(Halide::round((iScaled + normFactor) /
-                                                      Halide::cast<T>(2))),
-                      0, sqrtOrder - 1);
-    Halide::Expr const qIdx =
-        Halide::clamp(Halide::cast<int>(Halide::round((qScaled + normFactor) /
-                                                      Halide::cast<T>(2))),
-                      0, sqrtOrder - 1);
-
-    Halide::Expr const symbol = qIdx * sqrtOrder + iIdx;
-
-    func(x) = Halide::cast<T>(symbol);
+    // Single Complex Input
+    Halide::Expr const iValRaw = inputFunc(0, Halide::clamp(x, 0, inputLen - 1));
+    Halide::Expr const qValRaw = inputFunc(1, Halide::clamp(x, 0, inputLen - 1));
+    iVal = iValRaw;
+    qVal = qValRaw;
   }
+
+  using RealT = typename ToHalideType<T>::Type;
+  Halide::Expr const normFactor = Halide::cast<RealT>(sqrtOrder - 1);
+  Halide::Expr const iScaled = iVal * normFactor;
+  Halide::Expr const qScaled = qVal * normFactor;
+
+  Halide::Expr const iIdx = Halide::clamp(
+      Halide::cast<int>(Halide::round((iScaled + normFactor) / Halide::cast<RealT>(2))), 0,
+      sqrtOrder - 1);
+  Halide::Expr const qIdx = Halide::clamp(
+      Halide::cast<int>(Halide::round((qScaled + normFactor) / Halide::cast<RealT>(2))), 0,
+      sqrtOrder - 1);
+
+  Halide::Expr const symbol = qIdx * sqrtOrder + iIdx;
+
+  func(x) = Halide::cast<RealT>(symbol);
+
   return func;
 }
 
 REGISTER_OP(QAM_DEMAP, handleQamDemap);
 
-// ============================================================================
-// PSKMap（PSK 符号映射）
-// ============================================================================
-
 /**
- * @brief PSK 映射：符号索引 -> I/Q 交织输出
+ * @brief Handle PSK Map 算子
  *
- * 将符号索引 k 映射到单位圆上的点：
- * - θ = 2π * k / M + π/M（偏移 π/M 避免轴上点）
- * - I = cos(θ), Q = sin(θ)
+ * 符号索引 -> I/Q 星座点
  *
- * 输出格式：[I0, Q0, I1, Q1, ...]
+ * 输入：Real 符号索引 [N]
+ * 输出：Complex I/Q 星座点 [N]
+ *
+ * 映射规则：
+ * - $\theta = \frac{2\pi k}{M} + \frac{\pi}{M}$
+ * - $I = \cos(\theta), Q = \sin(\theta)$
  */
 template <typename T>
 Halide::Func handlePskMap(const dsl::detail::Node* node, OpContext<T>& ctx,
                           const std::vector<Halide::Var>& args) {
   auto inputFunc = ctx.buildFunc(dsl::Signal::fromNode(node->inputs.at(0)));
-  int const order = node->modOrder;
+  int const order = std::get<int32_t>(node->param);
   int const inputLen = static_cast<int>(node->inputs.at(0)->shape.length);
 
   Halide::Func func;
   auto const twoPiVal = static_cast<real32_t>(2.0 * M_PI_VAL);
   auto const phaseOffsetVal = static_cast<real32_t>(M_PI_VAL / order);
 
-  if constexpr (IS_COMPLEX_V<T>) {
-    Halide::Var const& c = args[0];
-    Halide::Var const& x = args[1];
+  using RealT = typename ToHalideType<T>::Type;
 
-    Halide::Expr const symbol =
-        Halide::cast<int>(inputFunc(0, Halide::clamp(x, 0, inputLen - 1)));
-    Halide::Expr const twoPi =
-        Halide::cast<typename ToHalideType<T>::Type>(twoPiVal);
-    Halide::Expr const phaseOffset =
-        Halide::cast<typename ToHalideType<T>::Type>(phaseOffsetVal);
-    Halide::Expr const theta =
-        (twoPi * Halide::cast<typename ToHalideType<T>::Type>(symbol) /
-         Halide::cast<typename ToHalideType<T>::Type>(order)) +
-        phaseOffset;
+  // pskMap: Real 输入 → Complex 输出
+  Halide::Var const& c = args[0];
+  Halide::Var const& x = args[1];
 
-    Halide::Expr const iVal = Halide::cos(theta);
-    Halide::Expr const qVal = Halide::sin(theta);
+  // 输入是 Real (1D)
+  Halide::Expr const symbol = Halide::cast<int>(inputFunc(Halide::clamp(x, 0, inputLen - 1)));
 
-    func(c, x) = Halide::select(c == 0, iVal, qVal);
-  } else {
-    Halide::Var const& x = args[0];
-    Halide::Expr const symIdx = x / 2;
-    Halide::Expr const isI = (x % 2) == 0;
+  Halide::Expr const twoPi = Halide::cast<RealT>(twoPiVal);
+  Halide::Expr const phaseOffset = Halide::cast<RealT>(phaseOffsetVal);
+  Halide::Expr const theta =
+      (twoPi * Halide::cast<RealT>(symbol) / Halide::cast<RealT>(order)) + phaseOffset;
 
-    Halide::Expr const symbol =
-        Halide::cast<int>(inputFunc(Halide::clamp(symIdx, 0, inputLen - 1)));
-    Halide::Expr const twoPi = Halide::cast<T>(twoPiVal);
-    Halide::Expr const phaseOffset = Halide::cast<T>(phaseOffsetVal);
-    Halide::Expr const theta =
-        (twoPi * Halide::cast<T>(symbol) / Halide::cast<T>(order)) +
-        phaseOffset;
+  Halide::Expr const iVal = Halide::cos(theta);
+  Halide::Expr const qVal = Halide::sin(theta);
 
-    Halide::Expr const iVal = Halide::cos(theta);
-    Halide::Expr const qVal = Halide::sin(theta);
+  func(c, x) = Halide::mux(c, {iVal, qVal});
 
-    func(x) = Halide::select(isI, iVal, qVal);
-  }
   return func;
 }
 
 REGISTER_OP(PSK_MAP, handlePskMap);
 
-// ============================================================================
-// PSKDemap（PSK 符号解映射）
-// ============================================================================
-
 /**
- * @brief PSK 解映射：I/Q 交织输入 -> 符号索引
+ * @brief Handle PSK Demap 算子
  *
- * 根据 I/Q 计算相位并量化到最近的星座点：
- * - θ = atan2(Q, I)
- * - k = round((θ - π/M) * M / 2π) mod M
+ * I/Q 星座点 -> 符号索引（硬判决）
+ *
+ * 判决规则：
+ * - 计算相位 $\theta = \text{atan2}(Q, I)$
+ * - 反解 k，并处理周期性
  */
 template <typename T>
 Halide::Func handlePskDemap(const dsl::detail::Node* node, OpContext<T>& ctx,
                             const std::vector<Halide::Var>& args) {
   auto inputFunc = ctx.buildFunc(dsl::Signal::fromNode(node->inputs.at(0)));
-  int const order = node->modOrder;
+  int const order = std::get<int32_t>(node->param);
   int const inputLen = static_cast<int>(node->inputs.at(0)->shape.length);
 
   Halide::Func func;
   auto const twoPiVal = static_cast<real32_t>(2.0 * M_PI_VAL);
   auto const phaseOffsetVal = static_cast<real32_t>(M_PI_VAL / order);
 
-  if constexpr (IS_COMPLEX_V<T>) {
-    Halide::Var const& c = args[0];
-    Halide::Var const& x = args[1];
+  using RealT = typename ToHalideType<T>::Type;
 
-    Halide::Expr const iVal = inputFunc(0, Halide::clamp(x, 0, inputLen - 1));
-    Halide::Expr const qVal = inputFunc(1, Halide::clamp(x, 0, inputLen - 1));
+  // pskDemap: Complex 输入 → Real 输出
+  Halide::Var const& x = args[0];
 
-    Halide::Expr const theta = Halide::atan2(qVal, iVal);
-
-    Halide::Expr const twoPi =
-        Halide::cast<typename ToHalideType<T>::Type>(twoPiVal);
-    Halide::Expr const thetaNorm = Halide::select(
-        theta < Halide::cast<typename ToHalideType<T>::Type>(0.0F),
-        theta + twoPi, theta);
-
-    Halide::Expr const phaseOffset =
-        Halide::cast<typename ToHalideType<T>::Type>(phaseOffsetVal);
-    Halide::Expr const kNum =
-        (thetaNorm - phaseOffset) *
-        Halide::cast<typename ToHalideType<T>::Type>(order) / twoPi;
-    Halide::Expr k = Halide::cast<int>(Halide::round(kNum));
-
-    k = Halide::select(k < 0, k + order, k);
-    k = Halide::select(k >= order, k - order, k);
-
-    func(c, x) =
-        Halide::select(c == 0, Halide::cast<typename ToHalideType<T>::Type>(k),
-                       Halide::cast<typename ToHalideType<T>::Type>(0));
-
+  Halide::Expr iVal;
+  Halide::Expr qVal;
+  if (node->inputs.size() == 2) {
+    // Dual Real Input
+    auto iFunc = ctx.buildFunc(dsl::Signal::fromNode(node->inputs.at(0)));
+    auto qFunc = ctx.buildFunc(dsl::Signal::fromNode(node->inputs.at(1)));
+    iVal = iFunc(Halide::clamp(x, 0, inputLen - 1));
+    qVal = qFunc(Halide::clamp(x, 0, inputLen - 1));
   } else {
-    Halide::Var const& x = args[0];
-    Halide::Expr const iPos = 2 * x;
-    Halide::Expr const qPos = 2 * x + 1;
-
-    Halide::Expr const iVal = inputFunc(Halide::clamp(iPos, 0, inputLen - 1));
-    Halide::Expr const qVal = inputFunc(Halide::clamp(qPos, 0, inputLen - 1));
-
-    Halide::Expr const theta = Halide::atan2(qVal, iVal);
-    Halide::Expr const twoPi = Halide::cast<T>(twoPiVal);
-    Halide::Expr const thetaNorm =
-        Halide::select(theta < Halide::cast<T>(0.0F), theta + twoPi, theta);
-
-    Halide::Expr const phaseOffset = Halide::cast<T>(phaseOffsetVal);
-    Halide::Expr const kNum =
-        (thetaNorm - phaseOffset) * Halide::cast<T>(order) / twoPi;
-    Halide::Expr k = Halide::cast<int>(Halide::round(kNum));
-
-    k = Halide::select(k < 0, k + order, k);
-    k = Halide::select(k >= order, k - order, k);
-
-    func(x) = Halide::cast<T>(k);
+    // Single Complex Input
+    iVal = inputFunc(0, Halide::clamp(x, 0, inputLen - 1));
+    qVal = inputFunc(1, Halide::clamp(x, 0, inputLen - 1));
   }
+
+  Halide::Expr const theta = Halide::atan2(qVal, iVal);
+  Halide::Expr const twoPi = Halide::cast<RealT>(twoPiVal);
+  Halide::Expr const thetaNorm =
+      Halide::select(theta < Halide::cast<RealT>(0.0F), theta + twoPi, theta);
+
+  Halide::Expr const phaseOffset = Halide::cast<RealT>(phaseOffsetVal);
+  Halide::Expr const kNum = (thetaNorm - phaseOffset) * Halide::cast<RealT>(order) / twoPi;
+  Halide::Expr k = Halide::cast<int>(Halide::round(kNum));
+
+  k = Halide::select(k < 0, k + order, k);
+  k = Halide::select(k >= order, k - order, k);
+
+  func(x) = Halide::cast<RealT>(k);
+
   return func;
 }
 

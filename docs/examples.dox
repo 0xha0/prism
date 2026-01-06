@@ -1,18 +1,83 @@
 /**
- * @page example_page 示例工程导航
- * @ingroup examples
- * @brief 示例工程清单与运行方式
+ * @page example_overview 示例工程
+ * @brief PRISM 示例与参考链路
  *
  * 本页汇总 `examples/` 下的示例工程，覆盖基础链路与扩频链路。
  * 每个示例包含：正确性验证、CPU/GPU 性能对比、BER 统计。
  *
  * @section example_files 示例文件
- * - @example examples/apm_basic/main.cpp
- * - @example examples/apm_dsss/main.cpp
+ * - @ref apm_basic/main.cpp "apm_basic 示例"
+ * - @ref apm_dsss/main.cpp "apm_dsss 示例"
  *
  * @section example_run 运行方式
  * - 构建示例：`cmake -S . -B build && cmake --build build --target example_apm_basic example_apm_dsss`
  * - 运行示例：`./build/example_apm_basic`、`./build/example_apm_dsss`
+ *
+ * @section example_deps 依赖
+ * - Halide 运行时与 autoscheduler 库
+ * - FFT 后端（vDSP/cuFFT/hipFFT/vkFFT 之一，按需启用）
+ * - GPU 路径需对应驱动与 Halide GPU target（如 Metal/CUDA/HIP/OpenCL）
+ *
+ * @section example_flow 使用流程
+ * - 读取 TOML 配置并生成派生参数
+ * - 编译 CPU 链路；GPU 可用且 enable 时再编译 GPU 链路
+ * - 依次进行正确性验证、CPU 性能测试；GPU 可用时追加 GPU 性能测试
+ * - 执行 BER 仿真；output.enable 时导出分步数据
+ *
+ * @section example_diagram 信号处理关系图
+ *
+ * 标记说明：* 表示尚未实现；(DSSS only) 仅在 DSSS 示例中启用。
+ *
+ * @dot
+ * digraph prism_example_flow {
+ *   rankdir=TB;
+ *   graph [bgcolor="transparent", newrank=true];
+ *   node [shape=box, style="rounded"];
+ *
+ *   subgraph cluster_tx {
+ *     label="TX";
+ *     color=lightgrey;
+ *     source   [label="Source"];
+ *     encode   [label="Encoding*"];
+ *     mod      [label="Modulation"];
+ *     spread   [label="Spreading (DSSS only)"];
+ *     upsample [label="Upsample + Shaping"];
+ *     upconv   [label="Upconversion"];
+ *     source -> encode -> mod -> spread -> upsample -> upconv;
+ *   }
+ *
+ *   channel [label="Channel"];
+ *
+ *   subgraph cluster_rx {
+ *     label="RX";
+ *     color=lightgrey;
+ *     downconv [label="Downconversion"];
+ *     sync     [label="Acquisition + Framing*"];
+ *     lpf      [label="LPF"];
+ *     eq       [label="Equalizer*"];
+ *     match    [label="Matched Filter + Downsample"];
+ *     despread [label="Despread (DSSS only)"];
+ *     demod    [label="Demodulation"];
+ *     decode   [label="Decoding*"];
+ *     sink     [label="Sink"];
+ *     sink -> decode -> demod -> despread -> match -> eq -> lpf -> sync -> downconv [dir=back];
+ *   }
+ *
+ *   upconv -> channel;
+ *   channel -> downconv;
+ *
+ *   { rank=same; upconv; downconv; channel; }
+ *   { rank=same; source; sink; }
+ * }
+ * @enddot
+ *
+ * 已实现示例：
+ * - 例 1：PSK/QAM 基础链路（不含 DSSS/均衡/编译码/帧同步）
+ * - 例 2：PSK/QAM + DSSS（扩频/解扩）
+ *
+ * @section example_sched 调度配置
+ * - `scheduler.tx`/`scheduler.rx` 可分别配置 `cpu`/`gpu` 的 `kind`/`name`/`extra`
+ * - `extra.weights_path` 默认注释，填入 autotune 输出即可启用
  *
  * @section example_notes 说明
  * - CPU/GPU 性能对比使用 Halide 的 `ExecMode` 控制，GPU 不可用时会自动跳过。
@@ -21,6 +86,19 @@
  */
 
 /**
- * @defgroup examples 示例工程
- * @brief PRISM 示例与参考链路
+ * @example apm_basic/main.cpp
+ * @include{doc} examples/apm_basic/README.md
+ *
+ * @section apm_basic_files 相关文件
+ * - `examples/apm_basic/main.cpp`
+ * - `examples/apm_basic/config.toml`
+ */
+
+/**
+ * @example apm_dsss/main.cpp
+ * @include{doc} examples/apm_dsss/README.md
+ *
+ * @section apm_dsss_files 相关文件
+ * - `examples/apm_dsss/main.cpp`
+ * - `examples/apm_dsss/config.toml`
  */

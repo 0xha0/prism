@@ -26,8 +26,12 @@ namespace prism::backend {
 /// @brief vkFFT CUDA 后端占位实现，接口预留以便后续接入
 class VkFFTCudaBackend : public FFTBackend {
  public:
-  bool is_available() const override { return true; }
-  const char* name() const override { return "vkFFT (CUDA)"; }
+  [[nodiscard]] bool isAvailable() const override { return false; }
+  [[nodiscard]] const char* name() const override { return "vkFFT (CUDA)"; }
+  [[nodiscard]] bool supports(ScalarType precision, FftTransType /*type*/) const override {
+    if (!isFloatType(precision)) return false;
+    return false;
+  }
 
   void forwardC2cImpl(complex32_t* data, int64_t n) override {
     // TODO: 实现 vkFFT CUDA C2C
@@ -38,31 +42,27 @@ class VkFFTCudaBackend : public FFTBackend {
     throw std::runtime_error("vkFFT CUDA backend not implemented yet");
   }
 
-  void inverse_c2c_impl(complex32_t* data, int64_t n, bool normalize) override {
+  void inverseC2cImpl(complex32_t* data, int64_t n, bool normalize) override {
     throw std::runtime_error("vkFFT CUDA backend not implemented yet");
   }
 
-  void inverse_c2c_impl(complex64_t* data, int64_t n, bool normalize) override {
+  void inverseC2cImpl(complex64_t* data, int64_t n, bool normalize) override {
     throw std::runtime_error("vkFFT CUDA backend not implemented yet");
   }
 
-  void forwardR2cImpl(const real32_t* in, complex32_t* out,
-                      int64_t n) override {
+  void forwardR2cImpl(const real32_t* in, complex32_t* out, int64_t n) override {
     throw std::runtime_error("vkFFT CUDA backend not implemented yet");
   }
 
-  void forwardR2cImpl(const real64_t* in, complex64_t* out,
-                      int64_t n) override {
+  void forwardR2cImpl(const real64_t* in, complex64_t* out, int64_t n) override {
     throw std::runtime_error("vkFFT CUDA backend not implemented yet");
   }
 
-  void inverseC2rImpl(const complex32_t* in, real32_t* out, int64_t n,
-                      bool normalize) override {
+  void inverseC2rImpl(const complex32_t* in, real32_t* out, int64_t n, bool normalize) override {
     throw std::runtime_error("vkFFT CUDA backend not implemented yet");
   }
 
-  void inverseC2rImpl(const complex64_t* in, real64_t* out, int64_t n,
-                      bool normalize) override {
+  void inverseC2rImpl(const complex64_t* in, real64_t* out, int64_t n, bool normalize) override {
     throw std::runtime_error("vkFFT CUDA backend not implemented yet");
   }
 };

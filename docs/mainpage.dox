@@ -1,6 +1,6 @@
 /**
  * @file mainpage.dox
- * @mainpage PRISM 开发者手册
+ * @mainpage PRISM 用户手册
  *
  * @section intro_sec 简介
  *
@@ -17,8 +17,8 @@
  *
  * 1. 初次接触：先读 @ref quickstart_sec 与 @ref workflow_sec 了解最小工作流。
  * 2. 开发 DSL 链路：重点阅读 @ref dsl 与 @ref runtime 章节。
- * 3. 优化或移植：参考 @ref backend 与 @ref schedule_sec，了解后端与调度接口。
- * 4. 验证与基准：跳转 @ref test_page、@ref benchmark_page 与 @ref example_page，直接运行现有用例。
+ * 3. 优化或移植：参考 @ref backend 与 @ref schedule_sec 了解后端与调度接口。
+ * 4. 验证与基准：跳转 @ref test_page "测试导航、" @ref benchmark_page "基准导航与" @ref example_overview "示例导航" 直接运行现有用例。
  *
  * @section arch_sec 系统架构
  *
@@ -74,7 +74,7 @@
  * - 运行时执行与 Handler：@ref runtime — Executor、调度配置、Anchor 管线
  * - 后端封装与 FFT：@ref backend — 统一接口与 vDSP/cuFFT/hipFFT/vkFFT 适配
  * - 仿真信号与信道：@ref simulation — 随机源、信道与噪声模型
- * - 示例工程导航：@ref example_page — 典型链路与扩频示例
+ * - 示例工程导航：@ref example_overview — 典型链路与扩频示例
  * - 测试用例导航：@ref test_page — 跳转到各测试源码并附运行方式
  * - 性能基准导航：@ref benchmark_page — 基准工具与常用参数
  *
@@ -87,13 +87,13 @@
  * @subsection dsl_sub DSL
  * - `prism/dsl/signal.h`：惰性计算图节点、`OpKind` 枚举与 Signal 句柄
  * - `prism/dsl/ops.h`：基础算子与卷积/克罗内克积工厂函数
- * - `prism/dsl/filter.h`：FIR / IIR / MovingAverage / Median 滤波器节点
+ * - `prism/dsl/filter.h`：FIR / MovingAverage / Median 滤波器节点
  * - `prism/dsl/modem.h`：混频、QAM/PSK 映射与解映射节点
  *
  * @subsection runtime_sub Runtime
  * - `prism/runtime/executor.h`：JIT/预编译入口，控制 CPU/GPU 模式与调度
  * - `prism/runtime/op_handler.h`：Handler 注册、Halide 构图上下文
- * - `prism/runtime/fft.h`：Anchor 算子封装，走后端 FFT
+ * - `prism/runtime/fft.h`：Anchor 算子封装，走后端 FFT（设备缓冲区为不透明句柄，仅通过 buffer 接口同步/拷贝）
  * - `prism/runtime/schedule_config.h`：CPU/GPU 调度与向量化参数
  *
  * @subsection backend_sub Backend
@@ -129,8 +129,8 @@
  * ctest --test-dir build        # 运行已启用的测试
  * ```
  *
- * - 后端检测：默认自动检测可用 GPU/加速库，可通过编译宏或 `setBackendPreference` 覆盖。
- * - 示例与工具：`examples/` 存放示例，详见 @ref example_page。
+ * - 后端检测：默认自动检测可用 GPU/加速库，可通过编译宏或 `setFftBackendPreference` 覆盖。
+ * - 示例与工具：`examples/` 存放示例，详见 @ref example_overview "示例工程导航。"
  */
 
 /**

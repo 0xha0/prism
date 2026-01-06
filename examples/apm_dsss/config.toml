@@ -1,0 +1,136 @@
+[modem]
+order = 2
+scheme = "auto"
+symbols = 4096
+
+[sim]
+perf_min_time_ms = 256
+iters = 256
+snr_db = [-15, -10, -5, 0, 5, 10, 15]
+seed = 42
+enable_gpu = true
+
+[dsss]
+chip_len = 32
+pn_seed = 7
+# code = [1, -1, 1, -1, 1, -1, 1, -1]
+
+[sampling]
+samples_per_symbol = 8
+symbol_rate_hz = 1e6
+sample_rate_hz = 0.0
+carrier_hz = 2e6
+rx_lo_offset_hz = 0.0
+tx_phase_rad = 0.0
+rx_phase_rad = 0.0
+
+[filter]
+mode = "rrc"
+rolloff = 0.35
+span = 8
+normalize = true
+
+[lpf]
+order = 63
+
+[channel]
+enable_awgn = true
+enable_fading = false
+gain = 1.0
+fading_taps = [1.0]
+fading_delays = [0]
+doppler_hz = 0.0
+doppler_start_hz = 0.0
+doppler_end_hz = 0.0
+cfo_hz = 0.0
+phase_noise_std = 0.0
+
+[scheduler.tx.cpu]
+kind = "auto"
+name = "Adams2019"
+
+[scheduler.tx.cpu.extra]
+parallelism = 16
+beam_size = 32
+random_dropout = 100
+random_dropout_seed = 42
+# weights_path = "build/autotune/samples/apm_dsss_tx_adams2019/updated.weights"
+disable_subtiling = 0
+disable_memoized_features = 0
+disable_memoized_blocks = 0
+memory_limit = -1
+
+[scheduler.tx.gpu]
+kind = "auto"
+name = "Anderson2021"
+[scheduler.tx.gpu.extra]
+parallelism = 256
+beam_size = 128
+random_dropout = 100
+random_dropout_seed = 42
+# weights_path = "build/autotune/samples/apm_dsss_tx_anderson2021/updated.weights"
+disable_subtiling = 0
+randomize_tilings = 1
+search_space_options = "0111"
+freeze_inline_compute_root = 0
+partial_schedule_path = ""
+num_passes = 5
+stack_factor = 0.95
+shared_memory_limit_kb = 48
+shared_memory_sm_limit_kb = 96
+active_block_limit = 32
+active_warp_limit = 64
+
+[scheduler.rx.cpu]
+kind = "auto"
+name = "Adams2019"
+
+[scheduler.rx.cpu.extra]
+parallelism = 16
+beam_size = 32
+random_dropout = 100
+random_dropout_seed = 42
+# weights_path = "build/autotune/samples/apm_dsss_rx_adams2019/updated.weights"
+disable_subtiling = 0
+disable_memoized_features = 0
+disable_memoized_blocks = 0
+memory_limit = -1
+
+[scheduler.rx.gpu]
+kind = "auto"
+name = "Anderson2021"
+
+[scheduler.rx.gpu.extra]
+parallelism = 256
+beam_size = 128
+random_dropout = 100
+random_dropout_seed = 0
+# weights_path = "build/autotune/samples/apm_dsss_rx_anderson2021/updated.weights"
+disable_subtiling = 0
+randomize_tilings = 1
+search_space_options = "0111"
+freeze_inline_compute_root = 0
+partial_schedule_path = ""
+num_passes = 5
+stack_factor = 0.95
+shared_memory_limit_kb = 48
+shared_memory_sm_limit_kb = 96
+active_block_limit = 32
+active_warp_limit = 64
+
+[output]
+enable = true
+dir = "outputs/apm_dsss"
+steps = [
+  "symbols",
+  "pn_code",
+  "mapped_iq",
+  "spread_iq",
+  "tx_shaped_iq",
+  "upconverted",
+  "channel",
+  "downconverted",
+  "chip_iq",
+  "despread_iq",
+  "demapped",
+]

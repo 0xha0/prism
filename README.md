@@ -18,11 +18,11 @@ PRISM 通过 DSL 构建惰性计算图，运行时结合 Halide JIT 与 FFT Vend
 
 ## 特性 Highlights
 
-- **流式 DSL**：`Signal` + 算子组合描述链路，不阻塞、不立即计算。
-- **Anchor 管线**：FFT/IFFT 强制走 Vendor API，性能与稳定性兼顾。
-- **后端可插拔**：自动探测或手动指定 vDSP / cuFFT / hipFFT / vkFFT。
-- **跨平台构建**：CMake + C++17，依赖简单。
-- **仿真工具集**：随机源、信道、噪声模型开箱即用。
+- **流式 DSL**：`Signal` + 算子组合描述链路，不阻塞、不立即计算
+- **Anchor 管线**：FFT/IFFT 强制走 Vendor API，性能与稳定性兼顾
+- **后端可插拔**：自动探测或手动指定 vDSP / cuFFT / hipFFT / vkFFT
+- **跨平台构建**：CMake + C++17，依赖简单
+- **仿真工具集**：随机源、信道、噪声模型开箱即用
 
 ## 环境与依赖
 
@@ -42,7 +42,7 @@ PRISM 通过 DSL 构建惰性计算图，运行时结合 Halide JIT 与 FFT Vend
 - Graphviz（生成文档图形）
 - Doxygen（生成 API 文档）
 
-> 后端开关：在 `cmake/local.cmake` 设置 `PRISM_USE_VDSP/PRISM_USE_CUFFT/PRISM_USE_HIPFFT/PRISM_USE_VKFFT` 为 `AUTO/ON/OFF`。
+> 后端开关：在 `cmake/local.cmake` 设置 `PRISM_USE_VDSP/PRISM_USE_CUFFT/PRISM_USE_HIPFFT/PRISM_USE_VKFFT` 为 `AUTO/ON/OFF`
 
 ## 快速开始
 
@@ -143,10 +143,10 @@ cmake --build build --target bench_ops bench_fft bench_filter bench_modem bench_
 
 使用流程：
 
-1. 读取 TOML 配置并生成派生参数。
-2. 编译 CPU 链路；`enable_gpu=true` 且 GPU 可用时再编译 GPU 链路。
-3. 进行正确性验证、CPU 性能测试；GPU 可用时追加 GPU 性能测试。
-4. 执行 BER 仿真；若 `output.enable=true` 则导出分步数据。
+1. 读取 TOML 配置并生成派生参数
+2. 编译 CPU 链路；`enable_gpu=true` 且 GPU 可用时再编译 GPU 链路
+3. 进行正确性验证、CPU 性能测试；GPU 可用时追加 GPU 性能测试
+4. 执行 BER 仿真；若 `output.enable=true` 则导出分步数据
 
 配置要点：
 
@@ -162,7 +162,7 @@ PRISM 提供 Halide 官方 autoscheduler 的 autotune 脚本（Adams2019 / Ander
 
 通用要求：
 
-- 已安装 Halide（`find_package(Halide REQUIRED)` 可通过）。
+- 已安装 Halide（`find_package(Halide REQUIRED)` 可通过）
 - 先构建 autotune 生成器：
 
   ```bash
@@ -179,8 +179,8 @@ macOS 额外：
 
 Anderson2021 额外：
 
-- 需要 `nvidia-smi`（缺失时 CMake 会自动生成 fake 版本，仅用于 GPU 数量检测）。
-- 需要 `libpng-config` 与 `libjpeg`（用于构建 RunGen 可执行文件）。
+- 需要 `nvidia-smi`（缺失时 CMake 会自动生成 fake 版本，仅用于 GPU 数量检测）
+- 需要 `libpng-config` 与 `libjpeg`（用于构建 RunGen 可执行文件）
 
 ### CMake 准备环境（推荐）
 
@@ -231,7 +231,7 @@ build/autotune/tools/adams2019_autotune_loop.sh \
   build/autotune/samples/apm_basic_tx_adams2019
 ```
 
-Anderson2021 若无真实 GPU，可通过自动生成的 fake `nvidia-smi` 让脚本通过检测。
+Anderson2021 若无真实 GPU，可通过自动生成的 fake `nvidia-smi` 让脚本通过检测
 
 ### 生成文档（依赖 Doxygen + Graphviz）
 
@@ -240,16 +240,16 @@ cmake --build build --target docs   # 需 Doxygen + Graphviz（dot）
 open docs/generated/html/index.html
 ```
 
-文档包含中文 API 手册、架构总览，并提供专门的 [测试导航](docs/tests.dox) 与 [基准导航](docs/benchmarks.dox) 页面，可直接跳转到源码；若未安装 Graphviz（`dot`），流程图将被跳过。
+文档包含中文 API 手册、架构总览，并提供专门的 [测试导航](docs/tests.dox) 与 [基准导航](docs/benchmarks.dox) 页面，可直接跳转到源码；若未安装 Graphviz（`dot`），流程图将被跳过
 
 ## 后续计划
 
-- **FFT 后端完善**：补齐 cuFFT/hipFFT/vkFFT(CUDA/HIP)，对齐批处理与可用性检测（参考现有 Metal/vDSP 结构）。
-- **文档与 CI**：新增后端选择/Anchor 行为/算子限制/零拷贝与 schedule 示例；CI 加入 clang-tidy/Doxygen/格式化 gate。
-- **算子与错误处理**：统一实/复数与精度接口，规划 fp16 路径；补充长度/形状/后端不可用等明确异常。
-- **信道与编译码路线**：先做 ZF/MMSE 与短 FIR 均衡（CPU/GPU 可选）；FEC 从 Hamming/CRC 起步，进阶到短约束卷积码+硬判决 Viterbi。
-- **示例矩阵**：PSK/QAM → +DSSS → +均衡 → +编译码 → +组帧/同步；每个示例含正确性、BER、CPU/GPU 性能对比与 README。
-- **推进顺序**：均衡+编译码+示例 → FFT 后端 → fp16 与类型统一 → 调度/错误处理 → CI Gate。
+- **FFT 后端完善**：补齐 cuFFT/hipFFT/vkFFT(CUDA/HIP)，对齐批处理与可用性检测（参考现有 Metal/vDSP 结构）
+- **文档与 CI**：新增后端选择/Anchor 行为/算子限制/零拷贝与 schedule 示例；CI 加入 clang-tidy/Doxygen/格式化 gate
+- **算子与错误处理**：统一实/复数与精度接口，规划 fp16 路径；补充长度/形状/后端不可用等明确异常
+- **信道与编译码路线**：先做 ZF/MMSE 与短 FIR 均衡（CPU/GPU 可选）；FEC 从 Hamming/CRC 起步，进阶到短约束卷积码+硬判决 Viterbi
+- **示例矩阵**：PSK/QAM → +DSSS → +均衡 → +编译码 → +组帧/同步；每个示例含正确性、BER、CPU/GPU 性能对比与 README
+- **推进顺序**：均衡+编译码+示例 → FFT 后端 → fp16 与类型统一 → 调度/错误处理 → CI Gate
 
 ## 目录结构
 
@@ -266,9 +266,9 @@ open docs/generated/html/index.html
 
 - **Halide JIT/AOT**：覆盖常规算子（Add/Filter/Modem 等），CPU/GPU 自动调度。
 - **FFT Anchor**：FFT/IFFT 节点强制调用后端，优先级 vDSP > cuFFT > hipFFT > vkFFT > Stub。
-- **手动控制**：`prism::initialize()` 默认自动选择；可通过 CMake 选项或编译宏覆盖。
+- **手动控制**：`prism::initialize()` 默认自动选择；可通过 CMake 选项或编译宏覆盖
 
 ## 支持与贡献
 
-- 提 Issue 时请附：系统/编译器版本、CMake 配置、启用后端、复现步骤。
-- 欢迎 PR：遵循现有风格，提交前跑 `ctest` 与相关基准。
+- 提 Issue 时请附：系统/编译器版本、CMake 配置、启用后端、复现步骤
+- 欢迎 PR：遵循现有风格，提交前跑 `ctest` 与相关基准

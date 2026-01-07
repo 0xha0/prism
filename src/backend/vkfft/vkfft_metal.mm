@@ -81,19 +81,11 @@ class VkFFTMetalBackend : public FFTBackend {
   void forwardC2cImpl(complex64_t *data, int64_t n) override { runC2c<real64_t>(data, n, 1, -1); }
 
   void inverseC2cImpl(complex32_t *data, int64_t n, bool normalize) override {
-    runC2c<real32_t>(data, n, 1, 1);
-    if (normalize) {
-      real32_t const scale = 1.0F / static_cast<real32_t>(n);
-      for (int64_t i = 0; i < n; ++i) data[i] *= scale;
-    }
+    runC2c<real32_t>(data, n, 1, 1, normalize);
   }
 
   void inverseC2cImpl(complex64_t *data, int64_t n, bool normalize) override {
-    runC2c<real64_t>(data, n, 1, 1);
-    if (normalize) {
-      real64_t const scale = 1.0 / static_cast<real64_t>(n);
-      for (int64_t i = 0; i < n; ++i) data[i] *= scale;
-    }
+    runC2c<real64_t>(data, n, 1, 1, normalize);
   }
 
   void forwardR2cImpl(const real32_t *in, complex32_t *out, int64_t n) override {
@@ -116,20 +108,40 @@ class VkFFTMetalBackend : public FFTBackend {
   MTL::Device *device_ = nullptr;
   MTL::CommandQueue *queue_ = nullptr;
   bool available_ = false;
+  struct CachedPlan;
   struct PendingBuffer {
     MTL::CommandBuffer *cmd = nullptr;
     DeviceBuffer *buffer = nullptr;
   };
   std::vector<PendingBuffer> pendingBuffers_;
+  enum class NormalizeKind : std::uint8_t {
+    None,
+    Complex32,
+    Complex64,
+    Real32,
+    Real64
+    };
+  struct PendingHostOp {
+    MTL::CommandBuffer *cmd = nullptr;
+    CachedPlan *plan = nullptr;
+    void *dst = nullptr;
+    const void *src = nullptr;
+    size_t bytes = 0;
+    NormalizeKind normalize = NormalizeKind::None;
+    int64_t normalizeCount = 0;
+    int64_t normalizeN = 0;
+  };
+  std::vector<PendingHostOp> pendingHostOps_;
 
   enum class PlanKind : std::uint8_t { C2C, R2C };
 
   struct PlanKey {
+    // NOLINTBEGIN
     FftTransType type = FftTransType::C2C;
     ScalarType precision = ScalarType::F32;
     int64_t n = 0;
     int64_t batch = 0;
-
+    // NOLINTEND
     bool operator==(const PlanKey &other) const {
       return type == other.type && precision == other.precision && n == other.n &&
              batch == other.batch;
@@ -281,6 +293,17 @@ class VkFFTMetalBackend : public FFTBackend {
 
  public:
   void clearCache() {
+    flushPendingHostOps(false);
+    for (auto &pending : pendingBuffers_) {
+      if (pending.cmd) {
+        pending.cmd->waitUntilCompleted();
+        pending.cmd->release();
+      }
+      if (pending.buffer) {
+        pending.buffer->asyncHandle = nullptr;
+      }
+    }
+    pendingBuffers_.clear();
     for (auto &[key, plan] : cache_) {
       if (plan) {
         releasePlan(*plan);
@@ -290,6 +313,7 @@ class VkFFTMetalBackend : public FFTBackend {
   }
 
   ~VkFFTMetalBackend() override {
+    flushPendingHostOps(false);
     for (auto &pending : pendingBuffers_) {
       if (pending.cmd) {
         pending.cmd->waitUntilCompleted();
@@ -306,7 +330,7 @@ class VkFFTMetalBackend : public FFTBackend {
   }
 
  private:
-  MTL::CommandBuffer *enqueuePlan(const CachedPlan &plan, int direction) {
+  MTL::CommandBuffer *enqueuePlan(CachedPlan &plan, int direction) {
     if (!available_) {
       throw std::runtime_error("vkFFT Metal backend not available");
     }
@@ -343,23 +367,157 @@ class VkFFTMetalBackend : public FFTBackend {
     return cmdBuffer;
   }
 
-  void executePlanSync(const CachedPlan &plan, int direction) {
+  void executePlanSync(CachedPlan &plan, int direction) {
     MTL::CommandBuffer *cmdBuffer = enqueuePlan(plan, direction);
     cmdBuffer->waitUntilCompleted();
     cmdBuffer->release();
   }
 
+  static void applyNormalization(const PendingHostOp &op) {
+    if (op.normalize == NormalizeKind::None || op.normalizeCount <= 0 || op.normalizeN <= 0 ||
+        op.dst == nullptr) {
+      return;
+    }
+    switch (op.normalize) {
+      case NormalizeKind::Complex32: {
+        auto *out = static_cast<complex32_t *>(op.dst);
+        real32_t const scale = static_cast<real32_t>(1.0F / static_cast<real32_t>(op.normalizeN));
+        for (int64_t i = 0; i < op.normalizeCount; ++i) {
+          out[i] *= scale;
+        }
+        break;
+      }
+      case NormalizeKind::Complex64: {
+        auto *out = static_cast<complex64_t *>(op.dst);
+        real64_t const scale = static_cast<real64_t>(1.0 / static_cast<real64_t>(op.normalizeN));
+        for (int64_t i = 0; i < op.normalizeCount; ++i) {
+          out[i] *= scale;
+        }
+        break;
+      }
+      case NormalizeKind::Real32: {
+        auto *out = static_cast<real32_t *>(op.dst);
+        real32_t const scale = static_cast<real32_t>(1.0F / static_cast<real32_t>(op.normalizeN));
+        for (int64_t i = 0; i < op.normalizeCount; ++i) {
+          out[i] *= scale;
+        }
+        break;
+      }
+      case NormalizeKind::Real64: {
+        auto *out = static_cast<real64_t *>(op.dst);
+        real64_t const scale = static_cast<real64_t>(1.0 / static_cast<real64_t>(op.normalizeN));
+        for (int64_t i = 0; i < op.normalizeCount; ++i) {
+          out[i] *= scale;
+        }
+        break;
+      }
+      case NormalizeKind::None:
+        break;
+    }
+  }
+
+  void drainPendingHostOpsForPlan(CachedPlan &plan, bool copyOutput) {
+    auto it = pendingHostOps_.begin();
+    while (it != pendingHostOps_.end()) {
+      if (it->plan != &plan) {
+        ++it;
+        continue;
+      }
+      if (it->cmd) {
+        it->cmd->waitUntilCompleted();
+      }
+      if (copyOutput && it->dst != nullptr && it->src != nullptr && it->bytes > 0 &&
+          it->dst != it->src) {
+        memcpy(it->dst, it->src, it->bytes);
+      }
+      if (copyOutput) {
+        applyNormalization(*it);
+      }
+      if (it->cmd) {
+        it->cmd->release();
+      }
+      it = pendingHostOps_.erase(it);
+    }
+  }
+
+  void dropPendingHostOpsForPlan(CachedPlan &plan) {
+    auto it = std::remove_if(pendingHostOps_.begin(), pendingHostOps_.end(),
+                             [&plan](const PendingHostOp &pending) {
+                               if (pending.plan != &plan) return false;
+                               if (pending.cmd) {
+                                 pending.cmd->release();
+                               }
+                               return true;
+                             });
+    pendingHostOps_.erase(it, pendingHostOps_.end());
+  }
+
+  void flushPendingHostOps(bool copyOutput) {
+    for (auto &pending : pendingHostOps_) {
+      if (pending.cmd) {
+        pending.cmd->waitUntilCompleted();
+      }
+      if (copyOutput && pending.dst != nullptr && pending.src != nullptr && pending.bytes > 0 &&
+          pending.dst != pending.src) {
+        memcpy(pending.dst, pending.src, pending.bytes);
+      }
+      if (copyOutput) {
+        applyNormalization(pending);
+      }
+      if (pending.cmd) {
+        pending.cmd->release();
+      }
+    }
+    pendingHostOps_.clear();
+  }
+
   template <typename T>
-  void runC2c(std::complex<T> *data, int64_t n, int64_t batch, int direction) {
+  void runC2c(std::complex<T> *data, int64_t n, int64_t batch, int direction,
+              bool normalize = false) {
     if (n <= 0 || (n & (n - 1)) != 0) {
       throw std::invalid_argument("FFT length must be power of 2");
     }
     CachedPlan &plan = getOrCreatePlan<T>(FftTransType::C2C, n, batch);
     auto *host = static_cast<std::complex<T> *>(plan.hostComplex);
     auto const dataSize = static_cast<size_t>(n * batch * sizeof(std::complex<T>));
-    memcpy(host, data, dataSize);
+    if (data != host) {
+      drainPendingHostOpsForPlan(plan, false);
+      memcpy(host, data, dataSize);
+    } else {
+      dropPendingHostOpsForPlan(plan);
+    }
+    MTL::CommandBuffer *cmdBuffer = enqueuePlan(plan, direction);
+    PendingHostOp pending;
+    pending.cmd = cmdBuffer;
+    pending.plan = &plan;
+    pending.dst = data;
+    pending.src = host;
+    pending.bytes = dataSize;
+    if (normalize) {
+      pending.normalize = std::is_same_v<T, real64_t> ? NormalizeKind::Complex64
+                                                      : NormalizeKind::Complex32;
+      pending.normalizeCount = n * batch;
+      pending.normalizeN = n;
+    }
+    pendingHostOps_.push_back(pending);
+  }
+
+  template <typename T>
+  void runC2cSync(std::complex<T> *data, int64_t n, int64_t batch, int direction) {
+    if (n <= 0 || (n & (n - 1)) != 0) {
+      throw std::invalid_argument("FFT length must be power of 2");
+    }
+    CachedPlan &plan = getOrCreatePlan<T>(FftTransType::C2C, n, batch);
+    auto *host = static_cast<std::complex<T> *>(plan.hostComplex);
+    auto const dataSize = static_cast<size_t>(n * batch * sizeof(std::complex<T>));
+    drainPendingHostOpsForPlan(plan, false);
+    if (data != host) {
+      memcpy(host, data, dataSize);
+    }
     executePlanSync(plan, direction);
-    memcpy(data, host, dataSize);
+    if (data != host) {
+      memcpy(data, host, dataSize);
+    }
   }
 
   template <typename T>
@@ -370,9 +528,20 @@ class VkFFTMetalBackend : public FFTBackend {
     CachedPlan &plan = getOrCreatePlan<T>(FftTransType::R2C, n, 1);
     auto *hostReal = static_cast<T *>(plan.hostReal);
     auto *hostComplex = static_cast<std::complex<T> *>(plan.hostComplex);
-    memcpy(hostReal, in, static_cast<size_t>(n * sizeof(T)));
-    executePlanSync(plan, -1);
-    memcpy(out, hostComplex, static_cast<size_t>((n / 2 + 1) * sizeof(std::complex<T>)));
+    if (in != hostReal) {
+      drainPendingHostOpsForPlan(plan, false);
+      memcpy(hostReal, in, static_cast<size_t>(n * sizeof(T)));
+    } else {
+      dropPendingHostOpsForPlan(plan);
+    }
+    MTL::CommandBuffer *cmdBuffer = enqueuePlan(plan, -1);
+    PendingHostOp pending;
+    pending.cmd = cmdBuffer;
+    pending.plan = &plan;
+    pending.dst = out;
+    pending.src = hostComplex;
+    pending.bytes = static_cast<size_t>((n / 2 + 1) * sizeof(std::complex<T>));
+    pendingHostOps_.push_back(pending);
   }
 
   template <typename T>
@@ -383,24 +552,35 @@ class VkFFTMetalBackend : public FFTBackend {
     CachedPlan &plan = getOrCreatePlan<T>(FftTransType::C2R, n, 1);
     auto *hostReal = static_cast<T *>(plan.hostReal);
     auto *hostComplex = static_cast<std::complex<T> *>(plan.hostComplex);
-    memcpy(hostComplex, in, static_cast<size_t>((n / 2 + 1) * sizeof(std::complex<T>)));
-    executePlanSync(plan, 1);
-    memcpy(out, hostReal, static_cast<size_t>(n * sizeof(T)));
-    if (normalize) {
-      T const scale = static_cast<T>(1) / static_cast<T>(n);
-      for (int64_t i = 0; i < n; ++i) {
-        out[i] *= scale;
-      }
+    if (in != hostComplex) {
+      drainPendingHostOpsForPlan(plan, false);
+      memcpy(hostComplex, in, static_cast<size_t>((n / 2 + 1) * sizeof(std::complex<T>)));
+    } else {
+      dropPendingHostOpsForPlan(plan);
     }
+    MTL::CommandBuffer *cmdBuffer = enqueuePlan(plan, 1);
+    PendingHostOp pending;
+    pending.cmd = cmdBuffer;
+    pending.plan = &plan;
+    pending.dst = out;
+    pending.src = hostReal;
+    pending.bytes = static_cast<size_t>(n * sizeof(T));
+    if (normalize) {
+      pending.normalize =
+          std::is_same_v<T, real64_t> ? NormalizeKind::Real64 : NormalizeKind::Real32;
+      pending.normalizeCount = n;
+      pending.normalizeN = n;
+    }
+    pendingHostOps_.push_back(pending);
   }
 
   // 高性能批量 FFT（使用缓存）
   void batchC2cImpl(complex32_t *data, int64_t n, int64_t batch, int direction) override {
-    runC2c<real32_t>(data, n, batch, direction);
+    runC2cSync<real32_t>(data, n, batch, direction);
   }
 
   void batchC2cImpl(complex64_t *data, int64_t n, int64_t batch, int direction) override {
-    runC2c<real64_t>(data, n, batch, direction);
+    runC2cSync<real64_t>(data, n, batch, direction);
   }
 
   // ========== 零拷贝 GPU 接口 ==========
@@ -673,6 +853,7 @@ class VkFFTMetalBackend : public FFTBackend {
    * @brief 同步等待所有异步操作完成
    */
   void sync() override {
+    flushPendingHostOps(true);
     for (auto &pending : pendingBuffers_) {
       if (pending.cmd) {
         pending.cmd->waitUntilCompleted();

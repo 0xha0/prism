@@ -29,7 +29,7 @@ using namespace prism::benchmark;
 /// @addtogroup benchmarks
 /// @{
 
-constexpr int kLabelWidth = 26;
+constexpr int LABEL_WIDTH = 26;
 
 /**
  * @brief 执行单个滤波器的三项基准测试
@@ -55,7 +55,7 @@ static void benchFilter(const std::string& baseName, int size, int iterations, B
   auto sig = buildFn(size, Traits::scalarType());
   auto times = BenchmarkRunner::runSignalBench<T>(sig, buf, iterations);
 
-  BenchPrinter::printBenchResult(withPrecision<T>(baseName), times, kLabelWidth);
+  BenchPrinter::printBenchResult(withPrecision<T>(baseName), times, LABEL_WIDTH);
 }
 
 template <typename T>
@@ -92,7 +92,7 @@ int main() {
 
   int const benchSizeValue = benchSize(102400);
   int const iterations = benchIterations(100);
-  BenchPrinter::printBenchHeader("Filter", kLabelWidth);
+  BenchPrinter::printBenchHeader("Filter", LABEL_WIDTH);
 
   forEachPrecision<real32_t, real64_t>([&](auto tag) {
     using T = typename decltype(tag)::type;

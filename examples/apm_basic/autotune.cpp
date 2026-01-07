@@ -25,15 +25,16 @@ namespace {
 
 class ApmBasicTxGenerator : public Halide::Generator<ApmBasicTxGenerator> {
  public:
-  Halide::GeneratorParam<std::string> config_path{"config_path", "examples/apm_basic/config.toml"};
-
+  // NOLINTBEGIN
+  Halide::GeneratorParam<std::string> configPath{"configPath", "examples/apm_basic/config.toml"};
   Input<Halide::Buffer<real32_t, 1>> input{"input"};
   Output<Halide::Buffer<real32_t, 2>> output{"output"};
+  // NOLINTEND
 
   void generate() {
     StandardArgs args;
     std::string err;
-    if (!loadStandardConfig(config_path, args, err) || !finalizeStandardArgs(args, err)) {
+    if (!loadStandardConfig(configPath, args, err) || !finalizeStandardArgs(args, err)) {
       _halide_user_error << err;
     }
 
@@ -67,7 +68,7 @@ class ApmBasicTxGenerator : public Halide::Generator<ApmBasicTxGenerator> {
 
 class ApmBasicRxGenerator : public Halide::Generator<ApmBasicRxGenerator> {
  public:
-  Halide::GeneratorParam<std::string> config_path{"config_path", "examples/apm_basic/config.toml"};
+  Halide::GeneratorParam<std::string> configPath{"configPath", "examples/apm_basic/config.toml"};
 
   Input<Halide::Buffer<real32_t, 2>> input{"input"};
   Output<Halide::Buffer<real32_t, 1>> output{"output"};
@@ -75,7 +76,7 @@ class ApmBasicRxGenerator : public Halide::Generator<ApmBasicRxGenerator> {
   void generate() {
     StandardArgs args;
     std::string err;
-    if (!loadStandardConfig(config_path, args, err) || !finalizeStandardArgs(args, err)) {
+    if (!loadStandardConfig(configPath, args, err) || !finalizeStandardArgs(args, err)) {
       _halide_user_error << err;
     }
 

@@ -233,7 +233,7 @@ build/autotune/tools/adams2019_autotune_loop.sh \
 
 Anderson2021 若无真实 GPU，可通过自动生成的 fake `nvidia-smi` 让脚本通过检测
 
-### 生成文档（依赖 Doxygen + Graphviz）
+### 生成文档
 
 ```bash
 cmake --build build --target docs   # 需 Doxygen + Graphviz（dot）

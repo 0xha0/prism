@@ -51,6 +51,8 @@ const std::string& fftBackendLabel() {
   }();
   return label;
 }
+
+inline void fftSync() { FFT::deviceSyncGlobal(); }
 }  // namespace
 
 // ==============================================================================
@@ -73,6 +75,7 @@ void testImpulseFft() {
   data[0] = {1, 0};  // Impulse
 
   FFT::forward(data.data(), 8);
+  fftSync();
 
   // Impulse FFT -> All ones
   std::vector<std::complex<T>> const expected(8, {1, 0});
@@ -110,6 +113,7 @@ void testSineFft() {
   }
 
   FFT::forward(data.data(), n);
+  fftSync();
 
   T peakMag = std::abs(data[freq]);
   // sin 的幅度为1，FFT 后单边峰值幅度为 N/2 = 32
@@ -142,7 +146,9 @@ void testRoundtripC2C() {
   }
 
   FFT::forward(data.data(), n);
+  fftSync();
   FFT::inverse(data.data(), n);  // library should normalize by 1/N
+  fftSync();
 
   T err = maxError(data, original);
   // Double 精度更高，Single 精度较低
@@ -176,9 +182,11 @@ void testR2cC2r() {
 
   // R2C: Input (N) -> Freq (N/2 + 1)
   FFT::forward(input.data(), freq.data(), n);
+  fftSync();
 
   // C2R: Freq (N/2 + 1) -> Output (N)
   FFT::inverse(freq.data(), output.data(), n);
+  fftSync();
 
   T err = maxError(input, output);
   T tol = (sizeof(T) == 8) ? 1e-10 : 1e-3;
@@ -243,8 +251,10 @@ void testBatch() {
 
   // sign = -1 for Forward
   FFT::batch(data.data(), n, batch, -1);
+  fftSync();
   // sign = 1 for Inverse
   FFT::batch(data.data(), n, batch, 1);
+  fftSync();
 
   T err = maxError(data, original);
   T tol = (sizeof(T) == 8) ? 1e-10 : 1e-3;
@@ -292,7 +302,9 @@ void testIterativeC2CDrift() {
   std::ostringstream oss;
   for (int iter = 1; iter <= maxIters; ++iter) {
     FFT::forward(data.data(), n);
+    fftSync();
     FFT::inverse(data.data(), n);
+    fftSync();
     if (iter == checkpoints[checkpointIdx]) {
       T const err = maxError(data, original);
       if (checkpointIdx > 0) oss << ", ";

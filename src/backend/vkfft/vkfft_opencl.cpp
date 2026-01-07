@@ -121,16 +121,6 @@ class VkFFTOpenCLBackend : public FFTBackend {
   VkFFTOpenCLBackend& operator=(VkFFTOpenCLBackend&&) = delete;
 
   ~VkFFTOpenCLBackend() override {
-    for (auto& pending : pendingEvents_) {
-      if (pending.event != nullptr) {
-        clWaitForEvents(1, &pending.event);
-        clReleaseEvent(pending.event);
-      }
-      if (pending.buffer) {
-        pending.buffer->asyncHandle = nullptr;
-      }
-    }
-    pendingEvents_.clear();
     clearCache();
     if (queue_ != nullptr) clReleaseCommandQueue(queue_);
     if (context_ != nullptr) clReleaseContext(context_);
@@ -151,19 +141,11 @@ class VkFFTOpenCLBackend : public FFTBackend {
   void forwardC2cImpl(complex64_t* data, int64_t n) override { runC2c<real64_t>(data, n, 1, -1); }
 
   void inverseC2cImpl(complex32_t* data, int64_t n, bool normalize) override {
-    runC2c<real32_t>(data, n, 1, 1);
-    if (normalize) {
-      real32_t const scale = 1.0F / static_cast<real32_t>(n);
-      for (int64_t i = 0; i < n; ++i) data[i] *= scale;
-    }
+    runC2c<real32_t>(data, n, 1, 1, normalize);
   }
 
   void inverseC2cImpl(complex64_t* data, int64_t n, bool normalize) override {
-    runC2c<real64_t>(data, n, 1, 1);
-    if (normalize) {
-      real64_t const scale = 1.0 / static_cast<real64_t>(n);
-      for (int64_t i = 0; i < n; ++i) data[i] *= scale;
-    }
+    runC2c<real64_t>(data, n, 1, 1, normalize);
   }
 
   void forwardR2cImpl(const real32_t* in, complex32_t* out, int64_t n) override {
@@ -185,11 +167,11 @@ class VkFFTOpenCLBackend : public FFTBackend {
   // ========== 批量 FFT 实现 ==========
 
   void batchC2cImpl(complex32_t* data, int64_t n, int64_t batch, int direction) override {
-    runC2c<real32_t>(data, n, batch, direction);
+    runC2cSync<real32_t>(data, n, batch, direction);
   }
 
   void batchC2cImpl(complex64_t* data, int64_t n, int64_t batch, int direction) override {
-    runC2c<real64_t>(data, n, batch, direction);
+    runC2cSync<real64_t>(data, n, batch, direction);
   }
 
   // ========== 设备缓冲区接口 ==========
@@ -495,20 +477,14 @@ class VkFFTOpenCLBackend : public FFTBackend {
    * @brief 同步等待所有异步操作完成
    */
   void sync() override {
-    for (auto& pending : pendingEvents_) {
-      if (pending.event != nullptr) {
-        clWaitForEvents(1, &pending.event);
-        clReleaseEvent(pending.event);
-      }
-      if (pending.buffer) {
-        pending.buffer->asyncHandle = nullptr;
-      }
-    }
-    pendingEvents_.clear();
+    flushPendingHostOps(true);
+    drainPendingEvents();
     if (queue_ != nullptr) clFinish(queue_);
   }
 
   void clearCache() {
+    flushPendingHostOps(false);
+    drainPendingEvents();
     for (auto& [key, plan] : cache_) {
       if (plan) {
         releasePlan(*plan);
@@ -547,6 +523,19 @@ class VkFFTOpenCLBackend : public FFTBackend {
     DeviceBuffer* buffer = nullptr;
   };
   std::vector<PendingEvent> pendingEvents_;
+  struct CachedPlan;
+  enum class NormalizeKind : std::uint8_t { None, Complex32, Complex64, Real32, Real64 };
+  struct PendingHostOp {
+    cl_event event = nullptr;
+    CachedPlan* plan = nullptr;
+    void* dst = nullptr;
+    cl_mem srcBuffer = nullptr;
+    size_t bytes = 0;
+    NormalizeKind normalize = NormalizeKind::None;
+    int64_t normalizeCount = 0;
+    int64_t normalizeN = 0;
+  };
+  std::vector<PendingHostOp> pendingHostOps_;
 
   enum class PlanKind : std::uint8_t { C2C, R2C };
 
@@ -639,6 +628,128 @@ class VkFFTOpenCLBackend : public FFTBackend {
         std::remove_if(pendingEvents_.begin(), pendingEvents_.end(),
                        [event](const PendingEvent& pending) { return pending.event == event; });
     pendingEvents_.erase(it, pendingEvents_.end());
+  }
+
+  void drainPendingEvents() {
+    for (auto& pending : pendingEvents_) {
+      if (pending.event != nullptr) {
+        clWaitForEvents(1, &pending.event);
+        clReleaseEvent(pending.event);
+      }
+      if (pending.buffer) {
+        pending.buffer->asyncHandle = nullptr;
+      }
+    }
+    pendingEvents_.clear();
+  }
+
+  static void applyNormalization(const PendingHostOp& op) {
+    if (op.normalize == NormalizeKind::None || op.normalizeCount <= 0 || op.normalizeN <= 0 ||
+        op.dst == nullptr) {
+      return;
+    }
+    switch (op.normalize) {
+      case NormalizeKind::Complex32: {
+        auto* out = static_cast<complex32_t*>(op.dst);
+        real32_t const scale = static_cast<real32_t>(1.0F / static_cast<real32_t>(op.normalizeN));
+        for (int64_t i = 0; i < op.normalizeCount; ++i) {
+          out[i] *= scale;
+        }
+        break;
+      }
+      case NormalizeKind::Complex64: {
+        auto* out = static_cast<complex64_t*>(op.dst);
+        real64_t const scale = static_cast<real64_t>(1.0 / static_cast<real64_t>(op.normalizeN));
+        for (int64_t i = 0; i < op.normalizeCount; ++i) {
+          out[i] *= scale;
+        }
+        break;
+      }
+      case NormalizeKind::Real32: {
+        auto* out = static_cast<real32_t*>(op.dst);
+        real32_t const scale = static_cast<real32_t>(1.0F / static_cast<real32_t>(op.normalizeN));
+        for (int64_t i = 0; i < op.normalizeCount; ++i) {
+          out[i] *= scale;
+        }
+        break;
+      }
+      case NormalizeKind::Real64: {
+        auto* out = static_cast<real64_t*>(op.dst);
+        real64_t const scale = static_cast<real64_t>(1.0 / static_cast<real64_t>(op.normalizeN));
+        for (int64_t i = 0; i < op.normalizeCount; ++i) {
+          out[i] *= scale;
+        }
+        break;
+      }
+      case NormalizeKind::None:
+        break;
+    }
+  }
+
+  void drainPendingHostOpsForPlan(CachedPlan& plan, bool copyOutput) {
+    auto it = pendingHostOps_.begin();
+    while (it != pendingHostOps_.end()) {
+      if (it->plan != &plan) {
+        ++it;
+        continue;
+      }
+      if (it->event != nullptr) {
+        clWaitForEvents(1, &it->event);
+      }
+      if (copyOutput && it->dst != nullptr && it->srcBuffer != nullptr && it->bytes > 0) {
+        cl_int const err =
+            clEnqueueReadBuffer(queue_, it->srcBuffer, CL_TRUE, 0, it->bytes, it->dst, 0, nullptr,
+                                nullptr);
+        if (err != CL_SUCCESS) {
+          if (it->event != nullptr) {
+            clReleaseEvent(it->event);
+            it->event = nullptr;
+          }
+          it = pendingHostOps_.erase(it);
+          throw std::runtime_error("Failed to read OpenCL output buffer");
+        }
+        applyNormalization(*it);
+      }
+      if (it->event != nullptr) {
+        clReleaseEvent(it->event);
+        it->event = nullptr;
+      }
+      it = pendingHostOps_.erase(it);
+    }
+  }
+
+  void flushPendingHostOps(bool copyOutput) {
+    for (auto& pending : pendingHostOps_) {
+      if (pending.event != nullptr) {
+        clWaitForEvents(1, &pending.event);
+      }
+      if (copyOutput && pending.dst != nullptr && pending.srcBuffer != nullptr &&
+          pending.bytes > 0) {
+        cl_int const err =
+            clEnqueueReadBuffer(queue_, pending.srcBuffer, CL_TRUE, 0, pending.bytes, pending.dst,
+                                0, nullptr, nullptr);
+        if (err != CL_SUCCESS) {
+          if (pending.event != nullptr) {
+            clReleaseEvent(pending.event);
+            pending.event = nullptr;
+          }
+          for (auto& remaining : pendingHostOps_) {
+            if (remaining.event != nullptr) {
+              clReleaseEvent(remaining.event);
+              remaining.event = nullptr;
+            }
+          }
+          pendingHostOps_.clear();
+          throw std::runtime_error("Failed to read OpenCL output buffer");
+        }
+        applyNormalization(pending);
+      }
+      if (pending.event != nullptr) {
+        clReleaseEvent(pending.event);
+        pending.event = nullptr;
+      }
+    }
+    pendingHostOps_.clear();
   }
 
   template <typename T>
@@ -751,7 +862,8 @@ class VkFFTOpenCLBackend : public FFTBackend {
   }
 
   template <typename T>
-  void runC2c(std::complex<T>* data, int64_t n, int64_t batch, int direction) {
+  void runC2c(std::complex<T>* data, int64_t n, int64_t batch, int direction,
+              bool normalize = false) {
     if (!available_) {
       throw std::runtime_error("vkFFT OpenCL backend not available");
     }
@@ -759,19 +871,38 @@ class VkFFTOpenCLBackend : public FFTBackend {
       throw std::invalid_argument("FFT length must be power of 2");
     }
     CachedPlan& plan = getOrCreatePlan<T>(FftTransType::C2C, n, batch);
+    auto* staging = static_cast<std::complex<T>*>(plan.hostComplex);
     auto const dataSize = static_cast<size_t>(n * batch * sizeof(std::complex<T>));
-    cl_int err =
-        clEnqueueWriteBuffer(queue_, plan.buffer, CL_TRUE, 0, dataSize, data, 0, nullptr, nullptr);
+    drainPendingHostOpsForPlan(plan, false);
+    if (staging != nullptr && data != staging) {
+      memcpy(staging, data, dataSize);
+    }
+    cl_int err = clEnqueueWriteBuffer(queue_, plan.buffer, CL_FALSE, 0, dataSize,
+                                      staging != nullptr ? staging : data, 0, nullptr, nullptr);
     if (err != CL_SUCCESS) {
       throw std::runtime_error("Failed to write OpenCL buffer");
     }
     cl_event event = enqueuePlan(plan, direction);
-    clWaitForEvents(1, &event);
-    clReleaseEvent(event);
-    err = clEnqueueReadBuffer(queue_, plan.buffer, CL_TRUE, 0, dataSize, data, 0, nullptr, nullptr);
-    if (err != CL_SUCCESS) {
-      throw std::runtime_error("Failed to read OpenCL buffer");
+    PendingHostOp pending;
+    pending.event = event;
+    pending.plan = &plan;
+    pending.dst = data;
+    pending.srcBuffer = plan.buffer;
+    pending.bytes = dataSize;
+    if (normalize) {
+      pending.normalize =
+          std::is_same_v<T, real64_t> ? NormalizeKind::Complex64 : NormalizeKind::Complex32;
+      pending.normalizeCount = n * batch;
+      pending.normalizeN = n;
     }
+    pendingHostOps_.push_back(pending);
+  }
+
+  template <typename T>
+  void runC2cSync(std::complex<T>* data, int64_t n, int64_t batch, int direction) {
+    runC2c<T>(data, n, batch, direction);
+    CachedPlan& plan = getOrCreatePlan<T>(FftTransType::C2C, n, batch);
+    drainPendingHostOpsForPlan(plan, true);
   }
 
   template <typename T>
@@ -783,20 +914,25 @@ class VkFFTOpenCLBackend : public FFTBackend {
       throw std::invalid_argument("FFT length must be power of 2");
     }
     CachedPlan& plan = getOrCreatePlan<T>(FftTransType::R2C, n, 1);
-    cl_int err = clEnqueueWriteBuffer(queue_, plan.inputBuffer, CL_TRUE, 0,
-                                      static_cast<size_t>(n * sizeof(T)), in, 0, nullptr, nullptr);
+    auto* staging = static_cast<T*>(plan.hostReal);
+    auto const inBytes = static_cast<size_t>(n * sizeof(T));
+    drainPendingHostOpsForPlan(plan, false);
+    if (staging != nullptr && in != staging) {
+      memcpy(staging, in, inBytes);
+    }
+    cl_int err = clEnqueueWriteBuffer(queue_, plan.inputBuffer, CL_FALSE, 0, inBytes,
+                                      staging != nullptr ? staging : in, 0, nullptr, nullptr);
     if (err != CL_SUCCESS) {
       throw std::runtime_error("Failed to write OpenCL input buffer");
     }
     cl_event event = enqueuePlan(plan, -1);
-    clWaitForEvents(1, &event);
-    clReleaseEvent(event);
-    err = clEnqueueReadBuffer(queue_, plan.buffer, CL_TRUE, 0,
-                              static_cast<size_t>((n / 2 + 1) * sizeof(std::complex<T>)), out, 0,
-                              nullptr, nullptr);
-    if (err != CL_SUCCESS) {
-      throw std::runtime_error("Failed to read OpenCL output buffer");
-    }
+    PendingHostOp pending;
+    pending.event = event;
+    pending.plan = &plan;
+    pending.dst = out;
+    pending.srcBuffer = plan.buffer;
+    pending.bytes = static_cast<size_t>((n / 2 + 1) * sizeof(std::complex<T>));
+    pendingHostOps_.push_back(pending);
   }
 
   template <typename T>
@@ -808,26 +944,31 @@ class VkFFTOpenCLBackend : public FFTBackend {
       throw std::invalid_argument("FFT length must be power of 2");
     }
     CachedPlan& plan = getOrCreatePlan<T>(FftTransType::C2R, n, 1);
-    cl_int err = clEnqueueWriteBuffer(queue_, plan.buffer, CL_TRUE, 0,
-                                      static_cast<size_t>((n / 2 + 1) * sizeof(std::complex<T>)),
-                                      in, 0, nullptr, nullptr);
+    auto* staging = static_cast<std::complex<T>*>(plan.hostComplex);
+    auto const inBytes = static_cast<size_t>((n / 2 + 1) * sizeof(std::complex<T>));
+    drainPendingHostOpsForPlan(plan, false);
+    if (staging != nullptr && in != staging) {
+      memcpy(staging, in, inBytes);
+    }
+    cl_int err = clEnqueueWriteBuffer(queue_, plan.buffer, CL_FALSE, 0, inBytes,
+                                      staging != nullptr ? staging : in, 0, nullptr, nullptr);
     if (err != CL_SUCCESS) {
       throw std::runtime_error("Failed to write OpenCL input buffer");
     }
     cl_event event = enqueuePlan(plan, 1);
-    clWaitForEvents(1, &event);
-    clReleaseEvent(event);
-    err = clEnqueueReadBuffer(queue_, plan.inputBuffer, CL_TRUE, 0,
-                              static_cast<size_t>(n * sizeof(T)), out, 0, nullptr, nullptr);
-    if (err != CL_SUCCESS) {
-      throw std::runtime_error("Failed to read OpenCL output buffer");
-    }
+    PendingHostOp pending;
+    pending.event = event;
+    pending.plan = &plan;
+    pending.dst = out;
+    pending.srcBuffer = plan.inputBuffer;
+    pending.bytes = static_cast<size_t>(n * sizeof(T));
     if (normalize) {
-      T const scale = static_cast<T>(1) / static_cast<T>(n);
-      for (int64_t i = 0; i < n; ++i) {
-        out[i] *= scale;
-      }
+      pending.normalize =
+          std::is_same_v<T, real64_t> ? NormalizeKind::Real64 : NormalizeKind::Real32;
+      pending.normalizeCount = n;
+      pending.normalizeN = n;
     }
+    pendingHostOps_.push_back(pending);
   }
 };
 

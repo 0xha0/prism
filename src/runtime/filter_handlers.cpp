@@ -350,7 +350,7 @@ Halide::Func buildSymmetricFir(
     }
     // Should not happen for Real output with Complex taps or other symmetries
     // if validated
-    return Halide::Func();
+    return {};
   }
 
   // Complex Result

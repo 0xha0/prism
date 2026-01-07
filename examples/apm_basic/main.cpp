@@ -253,7 +253,7 @@ int main(int argc, char** argv) {
     auto symbols = vectorToBuffer(randomSymbols<real32_t>(args.symbols, args.order, &rng));
 
     ExecMode const mode = (args.enableGpu && txChainGpu) ? ExecMode::GPU : ExecMode::CPU;
-    std::string backendName =
+    std::string const backendName =
         args.enableGpu && txChainGpu ? txChainGpu->targetName() : txChainCpu.targetName();
     StandardInspector inspector(backendName);
 

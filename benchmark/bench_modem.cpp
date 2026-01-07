@@ -30,7 +30,7 @@ using namespace prism::benchmark;
 /// @addtogroup benchmarks
 /// @{
 
-constexpr int kLabelWidth = 26;
+constexpr int LABEL_WIDTH = 26;
 
 template <typename OutT, typename InT, typename BuildFunc>
 static void benchModem(const std::string& baseName, int size, int iterations, BuildFunc buildFn) {
@@ -41,7 +41,7 @@ static void benchModem(const std::string& baseName, int size, int iterations, Bu
   auto sig = buildFn(size, InTraits::scalarType());
   auto times = BenchmarkRunner::runSignalBench<OutT>(sig, buf, iterations);
 
-  BenchPrinter::printBenchResult(withPrecision<OutT>(baseName), times, kLabelWidth);
+  BenchPrinter::printBenchResult(withPrecision<OutT>(baseName), times, LABEL_WIDTH);
 }
 
 template <typename RealT>
@@ -107,7 +107,7 @@ int main() {
 
   int const testSize = benchSize(102400);
   int const iterations = benchIterations(100);
-  BenchPrinter::printBenchHeader("Modem Op", kLabelWidth);
+  BenchPrinter::printBenchHeader("Modem Op", LABEL_WIDTH);
 
   forEachPrecision<real32_t, real64_t>([&](auto tag) {
     using T = typename decltype(tag)::type;

@@ -310,7 +310,7 @@ int main(int argc, char** argv) {
     prism::simulation::RNG rng(args.seed);
     auto symbols = vectorToBuffer(randomSymbols<real32_t>(args.symbols, args.order, &rng));
 
-    std::string backendName =
+    std::string const backendName =
         args.enableGpu && txChainGpu ? txChainGpu->targetName() : txChainCpu.targetName();
     StandardInspector inspector(backendName);
     ExecMode const mode = (args.enableGpu && txChainGpu) ? ExecMode::GPU : ExecMode::CPU;

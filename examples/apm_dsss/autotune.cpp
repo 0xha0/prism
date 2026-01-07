@@ -41,7 +41,7 @@ bool loadDsssArgs(const std::string& path, DsssArgs& args, StandardFilters& filt
 
 class ApmDsssTxGenerator : public Halide::Generator<ApmDsssTxGenerator> {
  public:
-  Halide::GeneratorParam<std::string> config_path{"config_path", "examples/apm_dsss/config.toml"};
+  Halide::GeneratorParam<std::string> configPath{"configPath", "examples/apm_dsss/config.toml"};
 
   Input<Halide::Buffer<real32_t, 1>> input{"input"};
   Output<Halide::Buffer<real32_t, 2>> output{"output"};
@@ -51,7 +51,7 @@ class ApmDsssTxGenerator : public Halide::Generator<ApmDsssTxGenerator> {
     StandardFilters filters;
     std::vector<real32_t> pnCodeRev;
     std::string err;
-    if (!loadDsssArgs(config_path, args, filters, pnCodeRev, err)) {
+    if (!loadDsssArgs(configPath, args, filters, pnCodeRev, err)) {
       _halide_user_error << err;
     }
 
@@ -82,7 +82,7 @@ class ApmDsssTxGenerator : public Halide::Generator<ApmDsssTxGenerator> {
 
 class ApmDsssRxGenerator : public Halide::Generator<ApmDsssRxGenerator> {
  public:
-  Halide::GeneratorParam<std::string> config_path{"config_path", "examples/apm_dsss/config.toml"};
+  Halide::GeneratorParam<std::string> configPath{"configPath", "examples/apm_dsss/config.toml"};
 
   Input<Halide::Buffer<real32_t, 2>> input{"input"};
   Output<Halide::Buffer<real32_t, 1>> output{"output"};
@@ -92,7 +92,7 @@ class ApmDsssRxGenerator : public Halide::Generator<ApmDsssRxGenerator> {
     StandardFilters filters;
     std::vector<real32_t> pnCodeRev;
     std::string err;
-    if (!loadDsssArgs(config_path, args, filters, pnCodeRev, err)) {
+    if (!loadDsssArgs(configPath, args, filters, pnCodeRev, err)) {
       _halide_user_error << err;
     }
 

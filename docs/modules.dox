@@ -1,0 +1,41 @@
+/**
+ * @page module_overview 模块概览
+ * @brief PRISM 核心模块深度解析
+ *
+ * PRISM 库由五大核心模块组成，各司其职构建了从 DSL 定义到异构后端执行的完整链路。
+ *
+ * @section core_sub Core / 类型
+ * 核心基础模块，提供全库通用的类型系统与生命周期管理。
+ * - `prism/prism.h`：库的全局初始化 (`initialize`) 与销毁 (`shutdown`)，版本信息查询。
+ * - `prism/types.h`：定义了 `ScalarType` (数据类型枚举)、`Shape` (张量形状) 以及 `ToHalideType` 类型映射工具，确保跨模块类型安全。
+ *
+ * @section dsl_sub DSL (Domain Specific Language)
+ * 流式信号处理描述语言，用于构建惰性计算图。DSL 节点在构建时不进行计算，仅记录依赖关系与算子属性。
+ * - `prism/dsl/signal.h`：核心 `Signal` 句柄，代表计算图中的边（数据流）。支持通过 `Signal::input` 创建输入节点。
+ * - `prism/dsl/ops.h`：提供基础数学算子（如 `Add`, `Mul`, `Scale`, `Conjugate`）与矩阵操作（如 `MatMul`, `KroneckerProduct`）。
+ * - `prism/dsl/filter.h`：滤波器节点工厂，支持 `FIR` (有限冲激响应), `MovingAverage` (滑动平均), `Median` (中值滤波) 等常见操作。
+ * - `prism/dsl/modem.h`：通信专用模组，包含 `Mixer` (混频), `QAM/PSK Mapper` (映射), `Demapper` (解映射/LLR计算)。
+ *
+ * @section runtime_sub Runtime (执行运行时)
+ * 负责将 DSL 计算图编译为可执行代码，并调度硬件资源。
+ * - `prism/runtime/executor.h`：统一执行入口。`Executor::run` 负责 JIT 编译与立即执行，`Executor::compile` 用于预编译静态库。
+ * - `prism/runtime/op_handler.h`：算子处理器注册机制。每个 DSL 节点对应一个 `OpHandler`，负责将其翻译为 Halide Func 或调用 Anchor。
+ * - `prism/runtime/fft.h`：Anchor 节点的一个典型实例。它截断 Halide 链路，强制将缓冲区数据同步到设备，调用 Vendor FFT API (如 cuFFT/vDSP)，再将结果包回 Halide 缓冲区。
+ * - `prism/runtime/schedule_config.h`：调度策略配置。控制 CPU 向量化位宽、GPU Block/Thread 大小、循环展开与融合策略。
+ *
+ * @section backend_sub Backend (异构后端接口)
+ * 封装不同硬件厂商的底层加速库，对外暴露统一的数学接口。
+ * - `prism/backend/backend_registry.h`：后端管理中心。支持运行时查询可用后端，设置优先级 (e.g. `setFftBackendPreference`)。
+ * - `prism/backend/fft_backend.h`：统一 FFT 接口抽象类。
+ * - **具体实现**：
+ *   - `src/backend/fft_vdsp.cpp`: Apple Accelerate.framework (vDSP) 实现。
+ *   - `src/backend/fft_cufft.cpp`: NVIDIA cuFFT 实现。
+ *   - `src/backend/fft_hipfft.cpp`: AMD hipFFT (ROCm) 实现。
+ *   - `src/backend/vkfft/*.cpp`: 基于 VkFFT 的通用后端，支持 Vulkan/OpenCL/CUDA/Metal。
+ *
+ * @section simulation_sub Simulation (仿真组件)
+ * 提供通信链路仿真所需的辅助工具，主要用于测试与验证，不参与核心生产链路构建。
+ * - `prism/simulation/rng.h`：确定性随机数生成器 (PCG/XorShift)，保证仿真结果可复现。
+ * - `prism/simulation/source.h`：信号源生成器，支持随机比特流、MQAM/MPSK 符号序列生成。
+ * - `prism/simulation/channel.h`：信道模型库。包含 AWGN (高斯白噪声), Rayleigh/Rician (瑞利/莱斯衰落), CFO (载波频偏) 等模型。
+ */

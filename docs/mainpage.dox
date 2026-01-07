@@ -74,37 +74,10 @@
  * - 运行时执行与 Handler：@ref runtime — Executor、调度配置、Anchor 管线
  * - 后端封装与 FFT：@ref backend — 统一接口与 vDSP/cuFFT/hipFFT/vkFFT 适配
  * - 仿真信号与信道：@ref simulation — 随机源、信道与噪声模型
+ * - 模块功能概览：@ref module_overview — Core/DSL/Runtime/Backend/Simulation 深度解析
  * - 示例工程导航：@ref example_overview — 典型链路与扩频示例
  * - 测试用例导航：@ref test_page — 跳转到各测试源码并附运行方式
  * - 性能基准导航：@ref benchmark_page — 基准工具与常用参数
- *
- * @section module_sec 模块概览
- *
- * @subsection core_sub Core / 类型
- * - `prism/prism.h`：生命周期管理、版本查询、后端名称查询
- * - `prism/types.h`：`ScalarType` / `Shape` / `ToHalideType` 等跨模块公共类型
- *
- * @subsection dsl_sub DSL
- * - `prism/dsl/signal.h`：惰性计算图节点、`OpKind` 枚举与 Signal 句柄
- * - `prism/dsl/ops.h`：基础算子与卷积/克罗内克积工厂函数
- * - `prism/dsl/filter.h`：FIR / MovingAverage / Median 滤波器节点
- * - `prism/dsl/modem.h`：混频、QAM/PSK 映射与解映射节点
- *
- * @subsection runtime_sub Runtime
- * - `prism/runtime/executor.h`：JIT/预编译入口，控制 CPU/GPU 模式与调度
- * - `prism/runtime/op_handler.h`：Handler 注册、Halide 构图上下文
- * - `prism/runtime/fft.h`：Anchor 算子封装，走后端 FFT（设备缓冲区为不透明句柄，仅通过 buffer 接口同步/拷贝）
- * - `prism/runtime/schedule_config.h`：CPU/GPU 调度与向量化参数
- *
- * @subsection backend_sub Backend
- * - `prism/backend/backend_registry.h`：后端枚举、偏好设置、名称查询
- * - `prism/backend/fft_backend.h`：统一 FFT 接口，封装 vDSP / cuFFT / hipFFT / vkFFT
- * - `src/backend/*.cpp`：具体后端实现与可用性检测
- *
- * @subsection simulation_sub Simulation
- * - `prism/simulation/rng.h`：可复现随机数生成器
- * - `prism/simulation/source.h`：比特/符号/QAM 源
- * - `prism/simulation/channel.h`：噪声、衰落、多普勒与相位噪声模型
  *
  * @section workflow_sec 典型工作流
  *

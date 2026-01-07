@@ -28,7 +28,7 @@ using namespace prism::benchmark;
 /// @addtogroup benchmarks
 /// @{
 
-constexpr int kLabelWidth = 32;  // NOLINT
+constexpr int LABEL_WIDTH = 32;  // NOLINT
 
 template <typename OutT, typename InT, typename BuildFunc>
 static void benchUnary(const std::string& baseName, int size, int iterations, BuildFunc buildFn) {
@@ -39,7 +39,7 @@ static void benchUnary(const std::string& baseName, int size, int iterations, Bu
   auto sig = buildFn(size, InTraits::scalarType());
   auto times = BenchmarkRunner::runSignalBench<OutT>(sig, buf, iterations);
 
-  BenchPrinter::printBenchResult(withPrecision<OutT>(baseName), times, kLabelWidth);
+  BenchPrinter::printBenchResult(withPrecision<OutT>(baseName), times, LABEL_WIDTH);
 }
 
 template <typename OutT, typename InA, typename InB, typename BuildFunc>
@@ -58,7 +58,7 @@ static void benchBinary(const std::string& baseName, int aLen, int bLen, int ite
   std::vector<Halide::Buffer<BufferElemT>> const inputs = {bufA, bufB};
   auto times = BenchmarkRunner::runSignalBenchMulti<OutT>(sig, inputs, iterations);
 
-  BenchPrinter::printBenchResult(withPrecision<OutT>(baseName), times, kLabelWidth);
+  BenchPrinter::printBenchResult(withPrecision<OutT>(baseName), times, LABEL_WIDTH);
 }
 
 template <typename RealT>
@@ -142,7 +142,7 @@ static void benchAdvOpsForType(int baseSize, int iterations) {
 int main() {
   BenchPrinter::printSuiteHeader("Advanced Ops");
   BenchPrinter::printBackendInfo();
-  BenchPrinter::printBenchHeader("Operation", kLabelWidth);
+  BenchPrinter::printBenchHeader("Operation", LABEL_WIDTH);
 
   int const baseSize = benchSize(16384);
   int const iterations = benchIterations(50);

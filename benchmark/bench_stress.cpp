@@ -36,7 +36,7 @@ using namespace prism::benchmark;
 /// @addtogroup benchmarks
 /// @{
 
-constexpr int kLabelWidth = 40;  // NOLINT
+constexpr int LABEL_WIDTH = 40;  // NOLINT
 constexpr int kQamOrder = 64;    // NOLINT
 
 struct AotRates {
@@ -48,7 +48,7 @@ struct SingleRates {
   std::optional<real64_t> value;
 };
 
-static void printAotHeader(const std::string& label, int width = kLabelWidth) {
+static void printAotHeader(const std::string& label, int width = LABEL_WIDTH) {
   std::cout << std::setw(width) << label << std::setw(13) << "AOT CPU" << std::setw(13) << "AOT GPU"
             << "\n";
   BenchPrinter::printSeparator(width + 26);
@@ -64,7 +64,7 @@ static void printRateCell(const std::optional<real64_t>& value) {
 }
 
 static void printAotResult(const std::string& name, const AotRates& rates,
-                           int width = kLabelWidth) {
+                           int width = LABEL_WIDTH) {
   std::cout << std::setw(width) << name;
   printRateCell(rates.cpu);
   printRateCell(rates.gpu);
@@ -72,13 +72,13 @@ static void printAotResult(const std::string& name, const AotRates& rates,
 }
 
 static void printSingleHeader(const std::string& label, const std::string& col,
-                              int width = kLabelWidth) {
+                              int width = LABEL_WIDTH) {
   std::cout << std::setw(width) << label << std::setw(13) << col << "\n";
   BenchPrinter::printSeparator(width + 13);
 }
 
 static void printSingleResult(const std::string& name, const SingleRates& rates,
-                              int width = kLabelWidth) {
+                              int width = LABEL_WIDTH) {
   std::cout << std::setw(width) << name;
   printRateCell(rates.value);
   std::cout << "\n";

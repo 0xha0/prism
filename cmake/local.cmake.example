@@ -4,15 +4,13 @@
 # 将此文件复制为 `local.cmake`（同目录）以自定义本地构建环境。
 # `local.cmake` 已被 gitignore，不会进入版本控制。
 #
-# 如需生成 Doxygen 文档，请确保本地安装 Doxygen 与 Graphviz。
-#
 # 使用方法: cp cmake/local.cmake.example cmake/local.cmake
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
-# 编译器 / 工具链
+# 1. 编译器与工具链设置
 # ------------------------------------------------------------------------------
-# macOS Homebrew LLVM:
+# macOS Homebrew LLVM 示例:
 # set(CMAKE_C_COMPILER "/opt/homebrew/opt/llvm/bin/clang")
 # set(CMAKE_CXX_COMPILER "/opt/homebrew/opt/llvm/bin/clang++")
 # list(PREPEND CMAKE_PREFIX_PATH "/opt/homebrew/opt/llvm")
@@ -21,50 +19,83 @@
 # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
 # set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -L/opt/homebrew/opt/llvm/lib/c++ -L/opt/homebrew/opt/llvm/lib/unwind -lunwind -Wl,-rpath,/opt/homebrew/opt/llvm/lib/c++ -Wl,-rpath,/opt/homebrew/opt/llvm/lib/unwind")
 
-# Linux/其他 LLVM 位置：
+# Linux Clang 示例:
 # set(CMAKE_C_COMPILER "/usr/bin/clang-17")
 # set(CMAKE_CXX_COMPILER "/usr/bin/clang++-17")
 
-# 其他编译标志（示例）：
-# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
-# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -fno-omit-frame-pointer")
-# set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
+# ------------------------------------------------------------------------------
+# 2. 编译选项 (Build Options)
+# ------------------------------------------------------------------------------
+# 开启/关闭 单元测试 (默认: ON)
+# set(PRISM_BUILD_TESTS OFF)
+
+# 开启/关闭 示例程序 (默认: ON)
+# set(PRISM_BUILD_EXAMPLES OFF)
+
+# 开启/关闭 基准测试 (默认: ON)
+# set(PRISM_BUILD_BENCHMARKS OFF)
 
 # ------------------------------------------------------------------------------
-# Halide 路径（如非系统默认）
+# 3. FFT 后端选择 (Backend Selection)
 # ------------------------------------------------------------------------------
-# set(Halide_DIR "/path/to/halide/lib/cmake/Halide")
+# 设置为 "AUTO" (默认) 将自动检测可用性。
+# 设置为 "ON" 强制启用 (如果依赖缺失会报错)。
+# 设置为 "OFF" 强制禁用。
+
+# Apple vDSP (macOS 默认启用)
+# set(PRISM_USE_VDSP "OFF")
+
+# NVIDIA cuFFT (检测到 CUDA 时启用)
+# set(PRISM_USE_CUFFT "ON")
+
+# AMD hipFFT (检测到 ROCm/HIP 时启用)
+# set(PRISM_USE_HIPFFT "ON")
+
+# vkFFT (基于 Vulkan/OpenCL/Cuda/Metal 的通用后端)
+# set(PRISM_USE_VKFFT "ON")
 
 # ------------------------------------------------------------------------------
-# 依赖路径覆盖（可选）
+# 4. vkFFT 高级配置 (VkFFT Advanced)
 # ------------------------------------------------------------------------------
-# list(APPEND CMAKE_PREFIX_PATH "/custom/prefix")
-# set(CMAKE_INCLUDE_PATH "/custom/include")
-# set(CMAKE_LIBRARY_PATH "/custom/lib")
-
-# ------------------------------------------------------------------------------
-# 构建开关
-# ------------------------------------------------------------------------------
-# set(PRISM_BUILD_TESTS ON)
-# set(PRISM_BUILD_EXAMPLES ON)
-# set(PRISM_BUILD_BENCHMARKS ON)  # 默认跟随 PRISM_BUILD_EXAMPLES
-
-# ------------------------------------------------------------------------------
-# 后端开关（AUTO/ON/OFF）
-# ------------------------------------------------------------------------------
-# set(PRISM_USE_VDSP "AUTO")    # macOS vDSP
-# set(PRISM_USE_CUFFT "AUTO")   # NVIDIA cuFFT
-# set(PRISM_USE_HIPFFT "AUTO")  # AMD hipFFT
-# set(PRISM_USE_VKFFT "AUTO")   # vkFFT (Metal/CUDA/HIP/OpenCL fallback)
-
-# ------------------------------------------------------------------------------
-# vkFFT 后端强制选择（覆盖自动检测）
-# ------------------------------------------------------------------------------
+# 当启用 vkFFT 时，PRISM 会自动选择最佳后端 (Metal > CUDA > HIP > OpenCL)。
+# 你可以通过设置 PRISM_VKFFT_BACKEND 强制指定底层 API。
 # 有效值: 1=CUDA, 2=HIP, 3=OpenCL, 5=Metal
-# 设置后将忽略平台自动检测，强制使用指定后端
-# set(PRISM_VKFFT_BACKEND 3)    # 强制使用 OpenCL
-# set(PRISM_VKFFT_BACKEND 5)    # 强制使用 Metal
 
-# CUDA/ROCm 安装路径示例：
+# 强制使用 OpenCL 后端
+# set(PRISM_VKFFT_BACKEND 3)
+
+# 强制使用 Metal 后端 (macOS)
+# set(PRISM_VKFFT_BACKEND 5)
+
+# ------------------------------------------------------------------------------
+# 5. 依赖路径覆盖 (Dependency Paths)
+# ------------------------------------------------------------------------------
+# Halide 安装位置 (如果不在系统路径中)
+# set(Halide_DIR "/path/to/halide/lib/cmake/Halide")
+# 或者设置环境变量: export Halide_DIR=/path/to/halide/dist
+
+# CUDA Toolkit 路径
 # set(CUDAToolkit_ROOT "/usr/local/cuda")
+
+# ROCm 路径
 # list(APPEND CMAKE_PREFIX_PATH "/opt/rocm")
+
+# ------------------------------------------------------------------------------
+# 6. Autotune (自动调优) 配置
+# ------------------------------------------------------------------------------
+# 指定 Halide Anderson2021 脚本目录 (包含 utils.sh 等)
+# 默认尝试在 misc/scripts 中查找。
+# set(PRISM_ANDERSON2021_SCRIPTS_DIR "/path/to/halide/autoschedulers/anderson2021/scripts")
+
+# 伪造 NVIDIA-SMI (用于无 N 卡环境测试 Autotune 脚本流)
+# 默认: 如果找不到 nvidia-smi 则为 ON，否则为 OFF。
+# set(PRISM_AUTOTUNE_FAKE_NVIDIA_SMI ON)
+
+# 自定义 Autotune 编译时的 include/lib flags (通常会自动从 CMake 上下文继承)
+# set(PRISM_AUTOTUNE_PNG_CFLAGS "-I/custom/include")
+# set(PRISM_AUTOTUNE_PNG_LIBS "-L/custom/lib -lpng")
+# set(PRISM_AUTOTUNE_JPEG_CFLAGS "-I/custom/include")
+# set(PRISM_AUTOTUNE_JPEG_LIBS "-L/custom/lib -ljpeg")
+
+# 自定义 Autotune 需要链接的 Frameworks (macOS)
+# set(PRISM_AUTOTUNE_FRAMEWORKS "-framework Metal -framework Foundation")

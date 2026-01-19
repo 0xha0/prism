@@ -1,14 +1,19 @@
+perf_min_time_ms = 256
+enable_gpu = true
+enable_cpu = false
+enable_inspector = true
+
 [modem]
 order = 2
 scheme = "auto"
 symbols = 4096
 
-[sim]
-perf_min_time_ms = 256
+[ber_sim]
+enable = false
+seed = 42
 iters = 256
 snr_db = [-15, -10, -5, 0, 5, 10, 15]
-seed = 42
-enable_gpu = true
+use_gpu = true
 
 [dsss]
 chip_len = 32
@@ -50,9 +55,9 @@ kind = "auto"
 name = "Adams2019"
 
 [scheduler.tx.cpu.extra]
-parallelism = 16
+parallelism = 32
 beam_size = 32
-random_dropout = 100
+random_dropout = 128
 random_dropout_seed = 42
 # weights_path = "build/autotune/samples/apm_dsss_tx_adams2019/updated.weights"
 disable_subtiling = 0
@@ -64,20 +69,20 @@ memory_limit = -1
 kind = "auto"
 name = "Anderson2021"
 [scheduler.tx.gpu.extra]
-parallelism = 256
-beam_size = 128
-random_dropout = 100
+parallelism = 32
+beam_size = 64
+random_dropout = 128
 random_dropout_seed = 42
 # weights_path = "build/autotune/samples/apm_dsss_tx_anderson2021/updated.weights"
 disable_subtiling = 0
 randomize_tilings = 1
-search_space_options = "0111"
+search_space_options = "1111"
 freeze_inline_compute_root = 0
 partial_schedule_path = ""
-num_passes = 5
-stack_factor = 0.95
-shared_memory_limit_kb = 48
-shared_memory_sm_limit_kb = 96
+num_passes = 16
+stack_factor = 0.9
+shared_memory_limit_kb = 64
+shared_memory_sm_limit_kb = 128
 active_block_limit = 32
 active_warp_limit = 64
 
@@ -86,9 +91,9 @@ kind = "auto"
 name = "Adams2019"
 
 [scheduler.rx.cpu.extra]
-parallelism = 16
+parallelism = 32
 beam_size = 32
-random_dropout = 100
+random_dropout = 128
 random_dropout_seed = 42
 # weights_path = "build/autotune/samples/apm_dsss_rx_adams2019/updated.weights"
 disable_subtiling = 0
@@ -101,25 +106,25 @@ kind = "auto"
 name = "Anderson2021"
 
 [scheduler.rx.gpu.extra]
-parallelism = 256
-beam_size = 128
-random_dropout = 100
-random_dropout_seed = 0
+parallelism = 32
+beam_size = 64
+random_dropout = 128
+random_dropout_seed = 42
 # weights_path = "build/autotune/samples/apm_dsss_rx_anderson2021/updated.weights"
 disable_subtiling = 0
 randomize_tilings = 1
-search_space_options = "0111"
+search_space_options = "1111"
 freeze_inline_compute_root = 0
 partial_schedule_path = ""
-num_passes = 5
-stack_factor = 0.95
-shared_memory_limit_kb = 48
-shared_memory_sm_limit_kb = 96
+num_passes = 16
+stack_factor = 0.9
+shared_memory_limit_kb = 64
+shared_memory_sm_limit_kb = 128
 active_block_limit = 32
 active_warp_limit = 64
 
 [output]
-enable = true
+enable = false
 dir = "outputs/apm_dsss"
 steps = [
   "symbols",

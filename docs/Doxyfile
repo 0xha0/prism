@@ -59,7 +59,8 @@ INPUT                  = include \
                          docs \
                          tests \
                          benchmark \
-                         examples
+                         examples \
+                         REPORT.md
 INPUT_ENCODING         = UTF-8
 FILE_PATTERNS          = *.h \
                          *.hpp \
@@ -67,13 +68,13 @@ FILE_PATTERNS          = *.h \
                          *.dox \
                          *.md
 MARKDOWN_SUPPORT       = YES
-EXTENSION_MAPPING      = md=markdown
 RECURSIVE              = YES
 
 EXCLUDE                =
 EXCLUDE_SYMLINKS       = NO
 EXCLUDE_PATTERNS       = */external/* \
                          */build/* \
+                         */docs/generated/* \
                          */.git/*
 
 EXAMPLE_PATH           = examples
@@ -187,7 +188,6 @@ DOT_PATH               =
 DOTFILE_DIRS           =
 DOT_GRAPH_MAX_NODES    = 50
 MAX_DOT_GRAPH_DEPTH    = 0
-DOT_MULTI_TARGETS      = NO
 GENERATE_LEGEND        = YES
 DOT_CLEANUP            = YES
 REPEAT_BRIEF           = NO

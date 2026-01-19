@@ -193,19 +193,19 @@ bool loadModemConfig(const toml::table& cfg, int& order, size_t& symbols, ModemS
                      std::string& err);
 
 /**
- * @brief 读取 [sim] 仿真参数配置段
+ * @brief 读取 [ber_sim] 仿真参数配置段
  *
  * @param cfg TOML 配置表
+ * @param enable [out] 是否启用 BER 仿真
  * @param iters [out] BER 仿真迭代次数
- * @param perfMinTimeMs [out] 性能测试最小计时窗口 (ms)
  * @param seed [out] 随机数种子
- * @param enableGpu [out] 是否启用 GPU 加速
+ * @param useGpu [out] BER 是否优先使用 GPU
  * @param snrList [out] 信噪比 (dB) 列表
  * @param err [out] 错误信息
  * @return true 读取成功
  */
-bool loadSimConfig(const toml::table& cfg, int& iters, double& perfMinTimeMs, uint64_t& seed,
-                   bool& enableGpu, std::vector<double>& snrList, std::string& err);
+bool loadBerSimConfig(const toml::table& cfg, bool& enable, int& iters, uint64_t& seed,
+                      bool& useGpu, std::vector<double>& snrList, std::string& err);
 
 /**
  * @brief 读取 [sampling] 采样率配置段
@@ -364,12 +364,19 @@ double measureMs(Func&& func, double minTimeMs) {
   using ResultType = std::invoke_result_t<Func>;
   constexpr bool canSync = HAS_DEVICE_SYNC<ResultType>::value;
 
+  int const batch = canSync ? 32 : 1;
   const auto benchOp = [&]() {
     if constexpr (canSync) {
       auto out = func();
+      for (int i = 1; i < batch; ++i) {
+        out = func();
+      }
+      // 每个 batch 最后同步，减少同步开销
       out.device_sync();
     } else {
-      func();
+      for (int i = 0; i < batch; ++i) {
+        func();
+      }
     }
   };
 
@@ -380,7 +387,7 @@ double measureMs(Func&& func, double minTimeMs) {
   config.min_time = std::max(1e-3, minTimeMs / 1000.0);
   config.max_time = config.min_time * 4;
   auto result = Halide::Tools::benchmark(benchOp, config);
-  return result.wall_time * 1000.0;
+  return (result.wall_time / static_cast<double>(batch)) * 1000.0;
 }
 
 /** @brief 检查当前环境是否有可用的 GPU 设备 (Metal/CUDA/OpenCL) */
@@ -434,13 +441,17 @@ std::vector<complex32_t> applyChannel(const std::vector<complex32_t>& in,
  */
 struct StandardArgs {
   int iters = 50;                          ///< BER 统计的帧迭代次数
-  double perfMinTimeMs = 100.0;            ///< 性能测试最小计时窗口 (ms)
-  bool enableGpu = true;                   ///< 是否优先使用 GPU 后端
+  double perfMinTimeMs = 64.0;            ///< 性能测试最小计时窗口 (ms)
+  bool enableCpu = true;                   ///< 是否启用 CPU 执行路径
+  bool enableGpu = true;                   ///< 是否启用 GPU 执行路径
+  bool enableInspector = true;             ///< 是否启用步骤检查器
   int order = 2;                           ///< 调制阶数 (M-ary)
   size_t symbols = 4096;                   ///< 每帧仿真的符号数
   uint64_t seed = 42;                      ///< 随机数生成器种子
   ModemScheme scheme = ModemScheme::AUTO;  ///< 调制方式
   std::vector<double> snrList;             ///< 需要扫描的 SNR 点列表 (dB)
+  bool berEnable = true;                   ///< 是否启用 BER 仿真
+  bool berUseGpu = true;                   ///< BER 是否优先使用 GPU
 
   size_t samplesPerSymbol = 8;  ///< 过采样率 (Samples Per Symbol/Chip)
   double symbolRateHz = 1e6;    ///< 符号率 (Baud Rate)

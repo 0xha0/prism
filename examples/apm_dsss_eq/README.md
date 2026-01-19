@@ -1,25 +1,25 @@
-# QAM/PSK + DSSS 物理链路示例
+# QAM/PSK + DSSS + FIR 均衡示例
 
-本示例在 QAM/PSK 链路中加入 DSSS（直接序列扩频），并模拟上采样、成形滤波、
-上/下变频与信道，用于 BER 统计与性能对比。参数通过 TOML 配置。
+本示例在 QAM/PSK + DSSS 链路中加入理想 FIR 时域均衡，使用已知信道响应设计
+逆滤波系数，并模拟上/下变频与信道，用于 BER 统计与性能对比。参数通过 TOML 配置。
 
 ## 构建
 
 ```bash
 cmake -S . -B build
-cmake --build build --target example_apm_dsss
+cmake --build build --target example_apm_dsss_eq
 ```
 
 ## 运行
 
 ```bash
-./build/example_apm_dsss
+./build/example_apm_dsss_eq
 ```
 
 自定义配置路径：
 
 ```bash
-./build/example_apm_dsss examples/apm_dsss/config.toml
+./build/example_apm_dsss_eq examples/apm_dsss_eq/config.toml
 ```
 
 > 若在 `build/` 目录内运行，请显式传入配置路径。
@@ -33,9 +33,10 @@ cmake --build build --target example_apm_dsss
 ## 使用流程
 
 1. 读取 TOML 配置并生成派生参数与 PN Code。
-2. 编译 CPU 链路；若 `enable_gpu=true` 且 GPU 可用则编译 GPU 链路。
-3. 进行正确性验证、CPU 性能测试；GPU 可用时追加 GPU 性能测试。
-4. 执行 BER 仿真；如开启 `output.enable` 则导出分步数据。
+2. 基于信道配置生成理想均衡器系数 (ZF FIR)。
+3. 编译 CPU 链路；若 `enable_gpu=true` 且 GPU 可用则编译 GPU 链路。
+4. 进行正确性验证、CPU 性能测试；GPU 可用时追加 GPU 性能测试。
+5. 执行 BER 仿真；如开启 `output.enable` 则导出分步数据。
 
 ## 配置说明 (TOML)
 
@@ -108,12 +109,14 @@ cmake --build build --target example_apm_dsss
 | :--- | :--- |
 | `enable_awgn` | 是否启用高斯白噪声 |
 | `enable_fading` | 是否启用多径衰落 |
-| `fading_taps` | 衰落路径数 |
+| `fading_taps` | 衰落路径增益 (实数) |
 | `fading_delays` | 各路径延迟 (sample) |
 | `doppler_hz` | 多普勒频移 (Hz) |
 | `cfo_hz` | 载波频偏 (Hz) |
 | `phase_noise_std` | 相位噪声标准差 |
 | `gain` | 信道增益 |
+
+> 均衡器依据 `fading_taps/fading_delays` 自动设计；若未启用多径，则等效为直通。
 
 ### `[scheduler]` 调度配置
 
@@ -133,12 +136,12 @@ cmake --build build --target example_apm_dsss
 | `dir` | 导出目录 |
 | `steps` | 需导出的步骤列表 (为空导出所有) |
 
-`perf_min_time_ms` 对应 RunGen 的 `--benchmark_min_time`，使用 Halide 官方 benchmark 进行计时。
+`perf_min_time_ms` 对应 RunGen 的 `--benchmark_min_time`。
 
 ## 输出说明
 
 输出包含三段：
 
-1. 正确性验证（理想链路往返）。
-2. 性能对比（TX DSSS + RX 解调）。
+1. 正确性验证（带信道但不加噪声）。
+2. 性能对比（TX DSSS + RX 均衡/解调）。
 3. BER 仿真（按 SNR 列表统计）。

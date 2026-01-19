@@ -399,18 +399,14 @@ bool loadModemConfig(const toml::table& cfg, int& order, size_t& symbols, ModemS
   return parseModemScheme(schemeText, scheme, err);
 }
 
-bool loadSimConfig(const toml::table& cfg, int& iters, double& perfMinTimeMs, uint64_t& seed,
-                   bool& enableGpu, std::vector<double>& snrList, std::string& err) {
-  iters = cfg["sim"]["iters"].value_or(iters);
-  if (auto minTimeMs = cfg["sim"]["perf_min_time_ms"].value<double>()) {
-    perfMinTimeMs = *minTimeMs;
-  } else if (auto minTimeMsInt = cfg["sim"]["perf_min_time_ms"].value<int64_t>()) {
-    perfMinTimeMs = static_cast<double>(*minTimeMsInt);
-  }
-  seed = cfg["sim"]["seed"].value_or(seed);
-  enableGpu = cfg["sim"]["enable_gpu"].value_or(enableGpu);
+bool loadBerSimConfig(const toml::table& cfg, bool& enable, int& iters, uint64_t& seed,
+                      bool& useGpu, std::vector<double>& snrList, std::string& err) {
+  enable = cfg["ber_sim"]["enable"].value_or(enable);
+  iters = cfg["ber_sim"]["iters"].value_or(iters);
+  seed = cfg["ber_sim"]["seed"].value_or(seed);
+  useGpu = cfg["ber_sim"]["use_gpu"].value_or(useGpu);
 
-  auto snrNode = cfg["sim"]["snr_db"];
+  auto snrNode = cfg["ber_sim"]["snr_db"];
   if (snrNode) {
     if (!readArray(snrNode, snrList) || snrList.empty()) {
       err = "SNR 列表读取失败";
@@ -887,11 +883,20 @@ bool loadStandardConfig(const std::string& path, StandardArgs& args, std::string
     return false;
   }
 
+  if (auto minTimeMs = cfg["perf_min_time_ms"].value<double>()) {
+    args.perfMinTimeMs = *minTimeMs;
+  } else if (auto minTimeMsInt = cfg["perf_min_time_ms"].value<int64_t>()) {
+    args.perfMinTimeMs = static_cast<double>(*minTimeMsInt);
+  }
+  args.enableGpu = cfg["enable_gpu"].value_or(args.enableGpu);
+  args.enableCpu = cfg["enable_cpu"].value_or(args.enableCpu);
+  args.enableInspector = cfg["enable_inspector"].value_or(args.enableInspector);
+
   if (!loadModemConfig(cfg, args.order, args.symbols, args.scheme, err)) {
     return false;
   }
-  if (!loadSimConfig(cfg, args.iters, args.perfMinTimeMs, args.seed, args.enableGpu, args.snrList,
-                     err)) {
+  if (!loadBerSimConfig(cfg, args.berEnable, args.iters, args.seed, args.berUseGpu, args.snrList,
+                        err)) {
     return false;
   }
   if (!loadSchedulerConfig(cfg, args, err)) {
@@ -923,8 +928,16 @@ bool finalizeStandardArgs(StandardArgs& args, std::string& err, int rateFactor) 
     args.scheme =
         (args.order > 8) && isPerfectSquare(args.order) ? ModemScheme::QAM : ModemScheme::PSK;
   }
-  if (args.symbols <= 0 || args.iters <= 0 || args.perfMinTimeMs <= 0.0) {
-    err = "symbols/iters/perf_min_time_ms 必须为正数";
+  if (args.symbols <= 0) {
+    err = "symbols 必须为正数";
+    return false;
+  }
+  if (args.perfMinTimeMs < 0.0) {
+    err = "perf_min_time_ms 必须为非负数";
+    return false;
+  }
+  if (!args.enableCpu && !args.enableGpu) {
+    err = "enable_cpu 和 enable_gpu 不能同时为 false";
     return false;
   }
   if (args.samplesPerSymbol <= 0) {
@@ -939,9 +952,15 @@ bool finalizeStandardArgs(StandardArgs& args, std::string& err, int rateFactor) 
                            err)) {
     return false;
   }
-  if (args.snrList.empty()) {
-    err = "SNR 列表不能为空";
-    return false;
+  if (args.berEnable) {
+    if (args.iters <= 0) {
+      err = "ber_sim.iters 必须为正数";
+      return false;
+    }
+    if (args.snrList.empty()) {
+      err = "ber_sim.snr_db 列表不能为空";
+      return false;
+    }
   }
   return true;
 }
@@ -1075,6 +1094,10 @@ void printStandardConfig(const StandardArgs& args) {
     line("lpf order", oss.str());
   }
 
+  line("cpu", args.enableCpu ? "启用" : "禁用");
+  line("gpu", args.enableGpu ? "启用" : "禁用");
+  line("inspector", args.enableInspector ? "启用" : "禁用");
+  line("ber", args.berEnable ? (args.berUseGpu ? "启用(GPU)" : "启用(CPU)") : "禁用");
   line("iters", std::to_string(args.iters));
   {
     std::ostringstream oss;
@@ -1082,8 +1105,7 @@ void printStandardConfig(const StandardArgs& args) {
     line("perf min time", oss.str());
   }
   line("seed", std::to_string(args.seed));
-  line("backend", prism::getFftBackendName());
-  line("gpu", args.enableGpu ? "可用" : "禁用");
+  line("fft backend", prism::getFftBackendName());
   std::cout << "\n";
 }
 
@@ -1103,7 +1125,7 @@ void runBenchSteps(const StandardArgs& args, const std::string& backendLabel,
                    runtime::ExecMode mode, const runtime::SchedulerConfig& schedule,
                    const Halide::Buffer<real32_t>& initialInput,
                    const std::vector<BenchStepSpec>& steps) {
-  if (args.perfMinTimeMs <= 0.0) return;
+  if (!args.enableInspector || args.perfMinTimeMs <= 0.0) return;
 
   StandardInspector inspector(backendLabel);
   Halide::Buffer<real32_t> currentInput = initialInput;
@@ -1155,7 +1177,7 @@ void StandardInspector::runStepBenchmarks(const StandardArgs& args,
 
 void StandardInspector::exportStepData(const StandardArgs& args,
                                        const Halide::Buffer<real32_t>& initialInput) {
-  if (!args.output.enable) return;
+  if (!args.enableInspector || !args.output.enable) return;
 
   std::cout << "\n正在导出分步仿真数据 (SNR=" << args.snrList[0] << "dB) [" << backendLabel_
             << "]...\n";

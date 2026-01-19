@@ -585,6 +585,26 @@ if(PRISM_BUILD_EXAMPLES)
         ${CMAKE_SOURCE_DIR}/external/tomlplusplus/include
     )
     prism_add_halide_tools_include(example_apm_dsss_autotune)
+
+    add_executable(example_apm_dsss_eq examples/apm_dsss_eq/main.cpp examples/example_helper.cpp)
+    target_link_libraries(example_apm_dsss_eq PRIVATE prism Halide::Halide)
+    target_include_directories(example_apm_dsss_eq PRIVATE
+        ${CMAKE_SOURCE_DIR}/examples
+        ${CMAKE_SOURCE_DIR}/external/tomlplusplus/include
+    )
+    prism_add_halide_tools_include(example_apm_dsss_eq)
+
+    add_executable(example_apm_dsss_eq_autotune
+        examples/apm_dsss_eq/autotune.cpp
+        examples/example_helper.cpp
+    )
+    target_link_libraries(example_apm_dsss_eq_autotune PRIVATE prism)
+    prism_link_halide_generator(example_apm_dsss_eq_autotune)
+    target_include_directories(example_apm_dsss_eq_autotune PRIVATE
+        ${CMAKE_SOURCE_DIR}/examples
+        ${CMAKE_SOURCE_DIR}/external/tomlplusplus/include
+    )
+    prism_add_halide_tools_include(example_apm_dsss_eq_autotune)
 endif()
 
 # ============================================================================

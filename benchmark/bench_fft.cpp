@@ -41,8 +41,8 @@ constexpr int kThroughputWidth = 15;
 constexpr int kSeparatorWidth = kSizeWidth + kOpWidth + kTimeWidth + kThroughputWidth;
 constexpr int kTimeCellWidth = 13;
 constexpr int kThroughputCellWidth = 12;
-constexpr int kDefaultIterations = 100;
-constexpr std::array<int, 7> kDefaultSizes = {256, 1024, 4096, 16384, 65536, 262144, 1048576};
+constexpr int kDefaultIterations = 256;
+constexpr std::array<int, 6> kDefaultSizes = {256, 1024, 4096, 16384, 65536, 262144};
 constexpr std::array<int, 4> kDefaultBatchSizes = {8, 16, 32, 64};
 constexpr const char* kOpC2C = "C2C";
 constexpr const char* kOpR2C = "R2C";
@@ -56,7 +56,7 @@ std::string makeBatchOpLabel(const char* base, int batch) {
 /**
  * @brief 打印 FFT 基准测试的表头
  *
- * 包含 Size, C2C 耗时, R2C 耗时及折算的吞吐率 (MS/s)
+ * 包含 Size, C2C 耗时, R2C 耗时及折算的吞吐率 (Mpt/s)
  */
 static void printHeader() {
   std::cout << std::setw(kSizeWidth) << "Size" << std::setw(kOpWidth) << "Op"
@@ -88,7 +88,7 @@ static void printRow(int size, const std::string& op, const std::optional<real64
   auto const throughput = toThroughput(throughputSize, timeMs);
   if (throughput) {
     std::cout << std::setw(kThroughputCellWidth) << std::setprecision(1) << *throughput
-              << " MS/s";
+              << " Mpt/s";
   } else {
     std::cout << std::setw(kThroughputCellWidth) << "n/a"
               << "  ";

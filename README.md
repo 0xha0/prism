@@ -4,7 +4,7 @@
   <h1>PRISM</h1>
 
   <p><b>Parallel RF Instructions for Signal Manipulation</b></p>
-  <p>基于 Halide 信号处理算子集</p>
+  <p>面向无线通信与信号处理的 C++/Halide 计算库</p>
 
   <p>
     <img src="https://img.shields.io/badge/C%2B%2B-17-blue.svg" alt="C++17">
@@ -14,7 +14,7 @@
 
 ---
 
-PRISM 通过 DSL 构建惰性计算图，运行时结合 Halide JIT 与 FFT Vendor 后端实现高效无线信号处理。常规算子统一由 Halide 调度，FFT/IFFT Anchor 节点可选择 vDSP / cuFFT / hipFFT / vkFFT。
+PRISM 是一个面向无线通信与数字信号处理的 C++17 库。它通过 DSL 构建惰性计算图，运行时结合 Halide JIT/AOT 与 FFT Vendor 后端完成跨平台高性能执行。常规算子统一由 Halide 调度，FFT/IFFT Anchor 节点可选择 vDSP / cuFFT / hipFFT / vkFFT。
 
 ## 特性 Highlights
 
@@ -38,7 +38,7 @@ PRISM 通过 DSL 构建惰性计算图，运行时结合 Halide JIT 与 FFT Vend
 - NVIDIA CUDA Toolkit（cuFFT）
 - AMD ROCm / hipFFT
 - vkFFT 源码（`external/vkfft` 子模块，Metal/CUDA/HIP/OpenCL）
-- cxxopts（`external/cxxopts` 子模块，示例 CLI）
+- tomlplusplus（`external/tomlplusplus` 子模块，示例配置解析）
 - Graphviz（生成文档图形）
 - Doxygen（生成 API 文档）
 
@@ -49,7 +49,7 @@ PRISM 通过 DSL 构建惰性计算图，运行时结合 Halide JIT 与 FFT Vend
 ```bash
 git clone https://github.com/<your-org>/prism.git
 cd prism
-git submodule update --init --recursive   # 确保 vkFFT/cxxopts 就绪
+git submodule update --init --recursive   # 确保 vkFFT/tomlplusplus 就绪
 
 cmake -S . -B build
 cmake --build build
@@ -58,9 +58,11 @@ cmake --build build
 最小示例：
 
 ```cpp
+#include <Halide.h>
+
 #include <prism/prism.h>
-#include <prism/dsl/Ops.h>
-#include <prism/runtime/Executor.h>
+#include <prism/dsl/ops.h>
+#include <prism/runtime/executor.h>
 
 using namespace prism::dsl;
 using namespace prism::runtime;
@@ -69,8 +71,11 @@ int main() {
     prism::initialize();
 
     Signal x = Signal::input(1024);
-    Signal y = Scale(x, 0.5);
-    auto out = Executor::run<prism::real32_t>(y);
+    Signal y = scale(x, prism::real32_t{0.5F});
+
+    Halide::Buffer<prism::real32_t> input(1024);
+    input.fill(1.0F);
+    auto out = Executor::run<prism::real32_t>(y, input);
 
     prism::shutdown();
     return 0;
@@ -133,7 +138,7 @@ cmake --build build --target bench_ops bench_fft bench_filter bench_modem bench_
 ./build/bench_fft    # 其他基准同理
 ```
 
-## 示例（apm_basic / apm_dsss）
+## 示例（apm_basic / apm_dsss / apm_dsss_eq）
 
 依赖补充：
 
@@ -166,7 +171,7 @@ PRISM 提供 Halide 官方 autoscheduler 的 autotune 脚本（Adams2019 / Ander
 - 先构建 autotune 生成器：
 
   ```bash
-  cmake --build build --target example_apm_basic_autotune example_apm_dsss_autotune
+  cmake --build build --target example_apm_basic_autotune example_apm_dsss_autotune example_apm_dsss_eq_autotune
   ```
 
 - 权重文件在 `misc/`：
@@ -245,7 +250,7 @@ open docs/generated/html/index.html
 ## 后续计划
 
 - **FFT 后端完善**：补齐 cuFFT/hipFFT/vkFFT(CUDA/HIP)，对齐批处理与可用性检测（参考现有 Metal/vDSP 结构）
-- **文档与 CI**：新增后端选择/Anchor 行为/算子限制/零拷贝与 schedule 示例；CI 加入 clang-tidy/Doxygen/格式化 gate
+- **文档与 CI**：完善后端选择、Anchor 行为、算子限制、零拷贝与 schedule 示例；通过 GitHub Actions 自动生成文档
 - **算子与错误处理**：统一实/复数与精度接口，规划 fp16 路径；补充长度/形状/后端不可用等明确异常
 - **信道与编译码路线**：先做 ZF/MMSE 与短 FIR 均衡（CPU/GPU 可选）；FEC 从 Hamming/CRC 起步，进阶到短约束卷积码+硬判决 Viterbi
 - **示例矩阵**：PSK/QAM → +DSSS → +均衡 → +编译码 → +组帧/同步；每个示例含正确性、BER、CPU/GPU 性能对比与 README
@@ -260,7 +265,7 @@ open docs/generated/html/index.html
 - `tests/`：单元测试
 - `docs/`：Doxygen 配置与主页（生成物在 `docs/generated`）
 - `cmake/`：构建脚本与工具链配置
-- `external/`：第三方依赖（例如 vkFFT、cxxopts）
+- `external/`：第三方依赖（例如 vkFFT、tomlplusplus）
 
 ## 后端说明
 

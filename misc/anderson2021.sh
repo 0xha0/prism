@@ -52,24 +52,16 @@ fi
 if [[ -z "${GENERATOR}" ]]; then
   _base="${PIPELINE_BASE}"
   if [[ -z "${_base}" ]]; then
-    if [[ "${PIPELINE}" == apm_basic_* ]]; then
-      _base="apm_basic"
-    elif [[ "${PIPELINE}" == apm_dsss_* ]]; then
-      _base="apm_dsss"
+    if [[ -n "${PIPELINE}" ]]; then
+      _base="${PIPELINE%_tx}"
+      _base="${_base%_rx}"
     fi
   fi
-  case "${_base}" in
-    apm_basic)
-      GENERATOR="${BUILD_DIR}/example_apm_basic_autotune"
-      ;;
-    apm_dsss)
-      GENERATOR="${BUILD_DIR}/example_apm_dsss_autotune"
-      ;;
-    *)
-      echo "Unknown pipeline base; set GENERATOR explicitly."
-      exit 1
-      ;;
-  esac
+  if [[ -z "${_base}" ]]; then
+    echo "Pipeline base is required; set PIPELINE_BASE or GENERATOR explicitly."
+    exit 1
+  fi
+  GENERATOR="${BUILD_DIR}/example_${_base}_autotune"
 fi
 
 # Halide target string (GPU targets required for Anderson2021).

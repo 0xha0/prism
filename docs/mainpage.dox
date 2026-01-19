@@ -48,9 +48,11 @@
  * @section quickstart_sec 快速开始
  *
  * ```cpp
+ * #include <Halide.h>
+ *
  * #include <prism/prism.h>
- * #include <prism/dsl/Ops.h>
- * #include <prism/runtime/Executor.h>
+ * #include <prism/dsl/ops.h>
+ * #include <prism/runtime/executor.h>
  *
  * using namespace prism::dsl;
  * using namespace prism::runtime;
@@ -59,8 +61,11 @@
  *     prism::initialize();
  *
  *     Signal x = Signal::input(1024);
- *     Signal y = Scale(x, 0.5);
- *     auto out = Executor::run<prism::real32_t>(y);
+ *     Signal y = scale(x, prism::real32_t{0.5F});
+ *
+ *     Halide::Buffer<prism::real32_t> input(1024);
+ *     input.fill(1.0F);
+ *     auto out = Executor::run<prism::real32_t>(y, input);
  *
  *     prism::shutdown();
  *     return 0;

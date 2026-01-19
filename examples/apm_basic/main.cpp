@@ -71,7 +71,7 @@ int main(int argc, char** argv) {
   // --------------------------------------------------------------------------
   // Initial Information / 配置信息显示
   // --------------------------------------------------------------------------
-  std::cout << "=== PRISM 示例: QAM/PSK 物理链路 (Refactored) ===\n\n";
+  std::cout << "=== PRISM 示例: QAM/PSK ===\n\n";
   std::cout << "配置文件: " << configPath << "\n";
   std::cout << "后端: " << prism::getFftBackendName() << "\n\n";
   printStandardConfig(args);
@@ -164,11 +164,20 @@ int main(int argc, char** argv) {
   // Execution
   // --------------------------------------------------------------------------
 
-  bool const pass = runStandardVerification(
-      args, [&](const Halide::Buffer<real32_t>& in) { return txChainCpu.run(in); },
-      [&](const Halide::Buffer<real32_t>& in) { return rxChainCpu.run(in); });
-  if (!pass) {
-    // verification failed, but we continue to perf/BER usually
+  if (args.enableCpu) {
+    bool const pass = runStandardVerification(
+        args, [&](const Halide::Buffer<real32_t>& in) { return txChainCpu.run(in); },
+        [&](const Halide::Buffer<real32_t>& in) { return rxChainCpu.run(in); });
+    if (!pass) {
+      // verification failed, but we continue to perf/BER usually
+    }
+  } else if (args.enableGpu && txChainGpu && rxChainGpu) {
+    bool const pass = runStandardVerification(
+        args, [&](const Halide::Buffer<real32_t>& in) { return txChainGpu->run(in); },
+        [&](const Halide::Buffer<real32_t>& in) { return rxChainGpu->run(in); });
+    if (!pass) {
+      // verification failed, but we continue to perf/BER usually
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -216,15 +225,17 @@ int main(int argc, char** argv) {
     chainSteps.push_back({"RX Downsample", prism::ScalarType::C32, true, defineRxDown});
     chainSteps.push_back({"RX Demap", prism::ScalarType::C32, false, defineRxDemap});
 
-    auto txOutCpu = txChainCpu.run(symbols);
-    runStandardBenchmarks(
-        args, [&](const Halide::Buffer<real32_t>& in) { return txChainCpu.run(in); },
-        [&](const Halide::Buffer<real32_t>& in) { return rxChainCpu.run(in); }, symbols, txOutCpu,
-        txChainCpu.targetName());
-    runBenchSteps(args, txChainCpu.targetName(), ExecMode::CPU, args.cpuScheduleTx, symbols,
-                  chainSteps);
+    if (args.enableCpu) {
+      auto txOutCpu = txChainCpu.run(symbols);
+      runStandardBenchmarks(
+          args, [&](const Halide::Buffer<real32_t>& in) { return txChainCpu.run(in); },
+          [&](const Halide::Buffer<real32_t>& in) { return rxChainCpu.run(in); }, symbols,
+          txOutCpu, txChainCpu.targetName());
+      runBenchSteps(args, txChainCpu.targetName(), ExecMode::CPU, args.cpuScheduleTx, symbols,
+                    chainSteps);
+    }
 
-    if (gpuAvailable() && txChainGpu && rxChainGpu) {
+    if (args.enableGpu && gpuAvailable() && txChainGpu && rxChainGpu) {
       auto txOutGpu = txChainGpu->run(symbols);
       runStandardBenchmarks(
           args, [&](const Halide::Buffer<real32_t>& in) { return txChainGpu->run(in); },
@@ -238,23 +249,36 @@ int main(int argc, char** argv) {
   // --------------------------------------------------------------------------
   // 3. BER
   // --------------------------------------------------------------------------
-  if (args.enableGpu && txChainGpu && rxChainGpu) {
-    runStandardBer(args, *txChainGpu, *rxChainGpu);
-  } else {
-    runStandardBer(args, txChainCpu, rxChainCpu);
+  if (args.berEnable) {
+    if (args.berUseGpu && args.enableGpu && txChainGpu && rxChainGpu) {
+      runStandardBer(args, *txChainGpu, *rxChainGpu);
+    } else if (args.enableCpu) {
+      runStandardBer(args, txChainCpu, rxChainCpu);
+    } else {
+      std::cout << "BER 仿真已跳过: CPU/GPU 路径未启用或不可用\n";
+    }
   }
 
   // --------------------------------------------------------------------------
   // 4. Dump Data
   // --------------------------------------------------------------------------
   if (args.output.enable) {
-    std::cout << "\n正在导出仿真数据 (SNR=" << args.snrList[0] << "dB)...\n";
+    double const snrDb0 = args.snrList.empty() ? 0.0 : args.snrList[0];
+    std::cout << "\n正在导出仿真数据 (SNR=" << snrDb0 << "dB)...\n";
+    bool const canUseGpu = args.enableGpu && txChainGpu;
+    bool const canUseCpu = args.enableCpu;
+    if (!canUseGpu && !canUseCpu) {
+      std::cout << "导出已跳过: CPU/GPU 路径未启用或不可用\n";
+      prism::shutdown();
+      return 0;
+    }
+
     prism::simulation::RNG rng(args.seed);
     auto symbols = vectorToBuffer(randomSymbols<real32_t>(args.symbols, args.order, &rng));
 
-    ExecMode const mode = (args.enableGpu && txChainGpu) ? ExecMode::GPU : ExecMode::CPU;
+    ExecMode const mode = canUseGpu ? ExecMode::GPU : ExecMode::CPU;
     std::string const backendName =
-        args.enableGpu && txChainGpu ? txChainGpu->targetName() : txChainCpu.targetName();
+        canUseGpu ? txChainGpu->targetName() : txChainCpu.targetName();
     StandardInspector inspector(backendName);
 
     // 1. Map
@@ -295,7 +319,7 @@ int main(int argc, char** argv) {
           prism::simulation::RNG r(args.seed);
           auto vec = bufferToVector(in);
           auto bb = interleavedToComplex(vec);
-          auto ch = applyChannel(bb, args.channel, args.sampleRateHz, args.snrList[0], r);
+          auto ch = applyChannel(bb, args.channel, args.sampleRateHz, snrDb0, r);
           return complexToBuffer(ch);
         },
         true);

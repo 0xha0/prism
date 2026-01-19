@@ -4,7 +4,9 @@
   <!-- Navigation index tabs for HTML output -->
   <navindex>
     <tab type="mainpage" visible="yes" title="首页"/>
-    <tab type="pages" visible="yes" title="" intro=""/>
+    <tab type="pages" visible="no" title="" intro=""/>
+    <tab type="user" url="@ref example_overview" title="示例工程"/>
+    <tab type="user" url="@ref module_overview" title="模块概览"/>
     <tab type="topics" visible="yes" title="" intro=""/>
     <tab type="modules" visible="yes" title="" intro="">
       <tab type="modulelist" visible="yes" title="" intro=""/>
@@ -40,6 +42,7 @@
       <tab type="filelist" visible="yes" title="" intro=""/>
       <tab type="globals" visible="yes" title="" intro=""/>
     </tab>
+    <tab type="user" url="@ref md_REPORT" title="技术报告"/>
   </navindex>
 
   <!-- Layout definition for a class page -->

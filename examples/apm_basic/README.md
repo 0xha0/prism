@@ -47,15 +47,24 @@ cmake --build build --target example_apm_basic
 | `scheme` | 调制方式 (`psk`, `qam`) |
 | `symbols` | 仿真符号总数 |
 
-### `[sim]` 仿真控制
+### 顶层参数
+
+| 参数名 | 说明 |
+| :--- | :--- |
+| `perf_min_time_ms` | 性能测试最小运行时长 (ms) |
+| `enable_gpu` | 是否启用 GPU 执行路径 |
+| `enable_cpu` | 是否启用 CPU 执行路径 |
+| `enable_inspector` | 是否启用步骤检查器 |
+
+### `[ber_sim]` 仿真控制
 
 | 参数名 | 说明 |
 | :--- | :--- |
 | `snr_db` | 信噪比 (dB) 列表 |
 | `iters` | 每个 SNR 点的仿真次数 |
-| `perf_min_time_ms` | 性能测试最小运行时长 (ms) |
 | `seed` | 随机数种子 |
-| `enable_gpu` | 是否启用 GPU 加速 |
+| `enable` | 是否启用 BER 仿真 |
+| `use_gpu` | BER 是否使用 GPU |
 
 ### `[sampling]` 采样与频率
 
@@ -115,8 +124,6 @@ cmake --build build --target example_apm_basic
 | `enable` | 是否启用数据导出 |
 | `dir` | 导出目录 |
 | `steps` | 需导出的步骤列表 (为空导出所有) |
-
-`perf_min_time_ms` 对应 RunGen 的 `--benchmark_min_time`。
 
 `perf_min_time_ms` 对应 RunGen 的 `--benchmark_min_time`，使用 Halide 官方 benchmark 进行计时。
 
